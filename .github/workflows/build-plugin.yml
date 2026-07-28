@@ -158,6 +158,39 @@ jobs:
           echo "Plugin link:"
           ls -ld "${plugin_destination}"
 
+      - name: Add plugin test suite to MariaDB
+        if: ${{ inputs.run-tests }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          test_suite="${{ inputs.test-suite }}"
+
+          if [[ -z "${test_suite}" ]]; then
+            test_suite="${{ inputs.plugin-directory }}"
+          fi
+
+          suite_source="${GITHUB_WORKSPACE}/plugin-source/mysql-test/${test_suite}"
+          suite_destination="${GITHUB_WORKSPACE}/mariadb-server/mysql-test/suite/${test_suite}"
+
+          if [[ ! -d "${suite_source}" ]]; then
+            echo "::error::Plugin test suite not found: ${suite_source}"
+            exit 1
+          fi
+
+          if [[ -e "${suite_destination}" ]]; then
+            echo "::error::MariaDB already contains test suite: ${suite_destination}"
+            exit 1
+          fi
+
+          ln -s "${suite_source}" "${suite_destination}"
+
+          echo "Test suite link:"
+          ls -ld "${suite_destination}"
+
+          echo "Test suite files:"
+          find "${suite_source}" -maxdepth 2 -type f -print | sort
+
       - name: Configure MariaDB
         shell: bash
         run: |
@@ -258,23 +291,34 @@ jobs:
           set -euxo pipefail
 
           test_suite="${{ steps.test-suite.outputs.name }}"
-          suite_directory="build/mysql-test/suite/${test_suite}"
 
-          if [[ ! -d "${suite_directory}" ]]; then
-            echo "::error::MTR suite not found: ${suite_directory}"
+          if [[ -d "build/mysql-test/suite/${test_suite}" ]]; then
+            mtr_directory="build/mysql-test"
+          elif [[ -d "mariadb-server/mysql-test/suite/${test_suite}" ]]; then
+            mtr_directory="mariadb-server/mysql-test"
+          else
+            echo "::error::MTR suite '${test_suite}' could not be found"
 
-            echo "Available plugin-related test suites:"
+            echo "Source suites:"
+            find mariadb-server/mysql-test/suite \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -type d \
+              -printf '%f\n' |
+              sort || true
+
+            echo "Build suites:"
             find build/mysql-test/suite \
               -mindepth 1 \
               -maxdepth 1 \
               -type d \
               -printf '%f\n' |
-              sort
+              sort || true
 
             exit 1
           fi
 
-          cd build/mysql-test
+          cd "${mtr_directory}"
 
           perl mariadb-test-run.pl \
             --suite="${test_suite}" \
