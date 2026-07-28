@@ -31,8 +31,8 @@ jobs:
             --location \
             --silent \
             --show-error \
-            "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_x86_64.tar.gz" |
-            tar xz actionlint
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz" |
+      tar xz actionlint
 
           sudo install -m 0755 actionlint /usr/local/bin/actionlint
 
