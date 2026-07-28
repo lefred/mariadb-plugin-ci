@@ -218,6 +218,34 @@ jobs:
             -DWITH_WSREP=OFF \
             "${extra_options[@]}"
 
+      - name: Add test suite to build tree
+        if: ${{ inputs.run_tests }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          test_suite="${{ inputs.test_suite }}"
+
+          if [[ -z "${test_suite}" ]]; then
+            test_suite="${{ inputs.plugin_directory }}"
+          fi
+
+          suite_source="${GITHUB_WORKSPACE}/plugin-source/mysql-test/${test_suite}"
+          suite_destination="${GITHUB_WORKSPACE}/build/mysql-test/suite/${test_suite}"
+
+          if [[ ! -d "${suite_source}" ]]; then
+            echo "::error::Test suite source not found: ${suite_source}"
+            exit 1
+          fi
+
+          mkdir -p "${GITHUB_WORKSPACE}/build/mysql-test/suite"
+
+          rm -rf "${suite_destination}"
+          ln -s "${suite_source}" "${suite_destination}"
+
+          ls -ld "${suite_destination}"
+          find "${suite_destination}" -maxdepth 2 -type f -print
+
       - name: Show matching build targets
         shell: bash
         run: |
@@ -303,7 +331,7 @@ jobs:
 
           cmake \
             --build build \
-            --target my_safe_process \
+            --target minibuild \
             --parallel "$(nproc)"
 
           cmake \
@@ -323,20 +351,23 @@ jobs:
           set -euxo pipefail
 
           test_suite="${{ steps.test-suite.outputs.name }}"
-          suite_directory="mariadb-server/mysql-test/suite/${test_suite}"
+          mtr_directory="${GITHUB_WORKSPACE}/build/mysql-test"
+          suite_directory="${mtr_directory}/suite/${test_suite}"
+
+          if [[ ! -f "${mtr_directory}/mariadb-test-run.pl" ]]; then
+            echo "::error::Out-of-source MTR wrapper not found"
+            find build/mysql-test -maxdepth 2 -type f -print || true
+            exit 1
+          fi
 
           if [[ ! -d "${suite_directory}" ]]; then
             echo "::error::MTR suite not found: ${suite_directory}"
             exit 1
           fi
 
-          source_directory="${GITHUB_WORKSPACE}/mariadb-server"
-          build_directory="${GITHUB_WORKSPACE}/build"
-
-          cd "${source_directory}/mysql-test"
+          cd "${mtr_directory}"
 
           perl mariadb-test-run.pl \
-            --builddir="${build_directory}" \
             --suite="${test_suite}" \
             --vardir="${RUNNER_TEMP}/mtr-${test_suite}-${{ matrix.mariadb_version }}" \
             --tmpdir="${RUNNER_TEMP}/mtr-tmp-${test_suite}-${{ matrix.mariadb_version }}" \
