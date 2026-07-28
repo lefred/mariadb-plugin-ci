@@ -238,6 +238,17 @@ jobs:
             --target "${{ inputs.build_target }}" \
             --parallel "$(nproc)"
 
+      - name: Build MTR test infrastructure
+        if: ${{ inputs.run_tests }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cmake \
+            --build build \
+            --target mariadb-test \
+            --parallel "$(nproc)"
+
       - name: Locate plugin library
         id: locate-plugin
         shell: bash
@@ -284,6 +295,22 @@ jobs:
 
           echo "name=${test_suite}" >> "${GITHUB_OUTPUT}"
 
+      - name: Check VMSTAT test suite
+        if: ${{ inputs.run_tests }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          ls -ld \
+            "mariadb-server/mysql-test/suite/${{ inputs.test_suite }}" \
+            "build/mysql-test/suite/${{ inputs.test_suite }}" || true
+
+          find \
+            "build/mysql-test/suite/${{ inputs.test_suite }}" \
+            -maxdepth 2 \
+            -type f \
+            -print || true
+
       - name: Run MTR tests
         if: ${{ inputs.run_tests }}
         shell: bash
@@ -292,22 +319,10 @@ jobs:
 
           test_suite="${{ steps.test-suite.outputs.name }}"
 
-          if [[ -d "build/mysql-test/suite/${test_suite}" ]]; then
-            mtr_directory="build/mysql-test"
-          elif [[ -d "mariadb-server/mysql-test/suite/${test_suite}" ]]; then
-            mtr_directory="mariadb-server/mysql-test"
-          else
-            echo "::error::MTR suite '${test_suite}' could not be found"
+          if [[ ! -d "build/mysql-test/suite/${test_suite}" ]]; then
+            echo "::error::MTR suite not found in build tree: build/mysql-test/suite/${test_suite}"
 
-            echo "Source suites:"
-            find mariadb-server/mysql-test/suite \
-              -mindepth 1 \
-              -maxdepth 1 \
-              -type d \
-              -printf '%f\n' |
-              sort || true
-
-            echo "Build suites:"
+            echo "Available build-tree suites:"
             find build/mysql-test/suite \
               -mindepth 1 \
               -maxdepth 1 \
@@ -318,7 +333,7 @@ jobs:
             exit 1
           fi
 
-          cd "${mtr_directory}"
+          cd build/mysql-test
 
           perl mariadb-test-run.pl \
             --suite="${test_suite}" \
