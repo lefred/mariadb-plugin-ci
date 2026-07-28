@@ -1,0 +1,415 @@
+name: Build lefred MariaDB plugin
+
+on:
+  workflow_call:
+    inputs:
+      plugin-name:
+        description: Human-readable plugin name used in package names
+        required: true
+        type: string
+
+      plugin-directory:
+        description: Directory name used under MariaDB server/plugin
+        required: true
+        type: string
+
+      build-target:
+        description: CMake target that builds the plugin
+        required: true
+        type: string
+
+      plugin-library:
+        description: Generated shared library filename, for example plugin_name.so
+        required: true
+        type: string
+
+      cmake-options:
+        description: Additional CMake options, for example -DPLUGIN_MY_PLUGIN=DYNAMIC
+        required: false
+        default: ""
+        type: string
+
+      test-suite:
+        description: MariaDB Test Runner suite name
+        required: false
+        default: ""
+        type: string
+
+      run-tests:
+        description: Run the MTR test suite
+        required: false
+        default: true
+        type: boolean
+
+      package-version:
+        description: Version used in package filenames; defaults to tag or commit
+        required: false
+        default: ""
+        type: string
+
+      artifact-retention-days:
+        description: Number of days to retain workflow artifacts
+        required: false
+        default: 14
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: MariaDB ${{ matrix.mariadb-version }}
+
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mariadb-version: "11.8"
+            mariadb-ref: "11.8"
+
+          - mariadb-version: "12.3"
+            mariadb-ref: "12.3"
+
+    steps:
+      - name: Check out plugin repository
+        uses: actions/checkout@v4
+        with:
+          path: plugin-source
+
+      - name: Check out MariaDB Server
+        uses: actions/checkout@v4
+        with:
+          repository: MariaDB/server
+          ref: ${{ matrix.mariadb-ref }}
+          path: mariadb-server
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          sudo apt-get update
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential \
+            bison \
+            ccache \
+            cmake \
+            git \
+            libaio-dev \
+            libboost-dev \
+            libboost-program-options-dev \
+            libcurl4-openssl-dev \
+            libevent-dev \
+            libfmt-dev \
+            libjudy-dev \
+            libncurses-dev \
+            libpcre2-dev \
+            libreadline-dev \
+            libssl-dev \
+            libsystemd-dev \
+            libxml2-dev \
+            libzstd-dev \
+            ninja-build \
+            pkg-config \
+            perl \
+            rsync \
+            zlib1g-dev
+
+      - name: Display build parameters
+        shell: bash
+        run: |
+          cat <<EOF
+          Plugin name:      ${{ inputs.plugin-name }}
+          Plugin directory: ${{ inputs.plugin-directory }}
+          Build target:     ${{ inputs.build-target }}
+          Plugin library:   ${{ inputs.plugin-library }}
+          MariaDB version:  ${{ matrix.mariadb-version }}
+          MariaDB ref:      ${{ matrix.mariadb-ref }}
+          CMake options:    ${{ inputs.cmake-options }}
+          Test suite:       ${{ inputs.test-suite }}
+          Run tests:        ${{ inputs.run-tests }}
+          EOF
+
+      - name: Add plugin to MariaDB source tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          plugin_source="${GITHUB_WORKSPACE}/plugin-source"
+          plugin_destination="${GITHUB_WORKSPACE}/mariadb-server/plugin/${{ inputs.plugin-directory }}"
+
+          if [[ ! -f "${plugin_source}/CMakeLists.txt" ]]; then
+            echo "::error::The plugin repository does not contain CMakeLists.txt"
+            exit 1
+          fi
+
+          if [[ -e "${plugin_destination}" ]]; then
+            echo "::error::MariaDB already contains ${plugin_destination}"
+            exit 1
+          fi
+
+          ln -s "${plugin_source}" "${plugin_destination}"
+
+          echo "Plugin link:"
+          ls -ld "${plugin_destination}"
+
+      - name: Configure MariaDB
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          extra_options=()
+
+          if [[ -n "${{ inputs.cmake-options }}" ]]; then
+            read -r -a extra_options <<< "${{ inputs.cmake-options }}"
+          fi
+
+          cmake \
+            -S mariadb-server \
+            -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DWITH_UNIT_TESTS=OFF \
+            -DWITH_EMBEDDED_SERVER=OFF \
+            -DPLUGIN_COLUMNSTORE=NO \
+            -DPLUGIN_CONNECT=NO \
+            -DPLUGIN_MROONGA=NO \
+            -DPLUGIN_ROCKSDB=NO \
+            -DPLUGIN_S3=NO \
+            -DPLUGIN_SPIDER=NO \
+            -DWITH_WSREP=OFF \
+            "${extra_options[@]}"
+
+      - name: Show matching build targets
+        shell: bash
+        run: |
+          set -o pipefail
+
+          cmake --build build --target help |
+            grep -i -E \
+              "${{ inputs.build-target }}|${{ inputs.plugin-directory }}" ||
+            true
+
+      - name: Build plugin
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cmake \
+            --build build \
+            --target "${{ inputs.build-target }}" \
+            --parallel "$(nproc)"
+
+      - name: Locate plugin library
+        id: locate-plugin
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          plugin_path="$(
+            find build \
+              -type f \
+              -name "${{ inputs.plugin-library }}" \
+              -print \
+              -quit
+          )"
+
+          if [[ -z "${plugin_path}" ]]; then
+            echo "::error::Could not find ${{ inputs.plugin-library }}"
+
+            echo "Shared libraries found in the build directory:"
+            find build -type f -name "*.so" -print | sort || true
+
+            exit 1
+          fi
+
+          real_plugin_path="$(realpath "${plugin_path}")"
+
+          echo "path=${real_plugin_path}" >> "${GITHUB_OUTPUT}"
+
+          echo "Found plugin library:"
+          file "${real_plugin_path}"
+          ldd "${real_plugin_path}" || true
+
+      - name: Determine test suite
+        if: ${{ inputs.run-tests }}
+        id: test-suite
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          test_suite="${{ inputs.test-suite }}"
+
+          if [[ -z "${test_suite}" ]]; then
+            test_suite="${{ inputs.plugin-directory }}"
+          fi
+
+          echo "name=${test_suite}" >> "${GITHUB_OUTPUT}"
+
+      - name: Run MTR tests
+        if: ${{ inputs.run-tests }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          test_suite="${{ steps.test-suite.outputs.name }}"
+          suite_directory="build/mysql-test/suite/${test_suite}"
+
+          if [[ ! -d "${suite_directory}" ]]; then
+            echo "::error::MTR suite not found: ${suite_directory}"
+
+            echo "Available plugin-related test suites:"
+            find build/mysql-test/suite \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -type d \
+              -printf '%f\n' |
+              sort
+
+            exit 1
+          fi
+
+          cd build/mysql-test
+
+          perl mariadb-test-run.pl \
+            --suite="${test_suite}" \
+            --force \
+            --retry=1
+
+      - name: Determine package version
+        id: package-version
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          version="${{ inputs.package-version }}"
+
+          if [[ -z "${version}" ]]; then
+            if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+              version="${GITHUB_REF_NAME}"
+            else
+              version="${GITHUB_SHA::12}"
+            fi
+          fi
+
+          # Keep package filenames predictable.
+          version="$(
+            printf '%s' "${version}" |
+              sed -E 's/[^A-Za-z0-9._+-]+/-/g'
+          )"
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create binary package
+        id: package
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          plugin_name="${{ inputs.plugin-name }}"
+          plugin_library="${{ inputs.plugin-library }}"
+          mariadb_version="${{ matrix.mariadb-version }}"
+          package_version="${{ steps.package-version.outputs.version }}"
+          architecture="$(uname -m)"
+
+          safe_plugin_name="$(
+            printf '%s' "${plugin_name}" |
+              tr '[:upper:]' '[:lower:]' |
+              sed -E 's/[^a-z0-9._+-]+/-/g'
+          )"
+
+          package_basename="${safe_plugin_name}-${package_version}-mariadb${mariadb_version}-linux-${architecture}"
+          package_root="${GITHUB_WORKSPACE}/dist/${package_basename}"
+
+          mkdir -p "${package_root}/lib/mariadb/plugin"
+          mkdir -p "${package_root}/share/doc/${safe_plugin_name}"
+
+          install \
+            -m 0755 \
+            "${{ steps.locate-plugin.outputs.path }}" \
+            "${package_root}/lib/mariadb/plugin/${plugin_library}"
+
+          for readme in \
+            plugin-source/README \
+            plugin-source/README.md \
+            plugin-source/README.txt
+          do
+            if [[ -f "${readme}" ]]; then
+              install \
+                -m 0644 \
+                "${readme}" \
+                "${package_root}/share/doc/${safe_plugin_name}/$(basename "${readme}")"
+            fi
+          done
+
+          for license in \
+            plugin-source/LICENSE \
+            plugin-source/LICENSE.md \
+            plugin-source/COPYING
+          do
+            if [[ -f "${license}" ]]; then
+              install \
+                -m 0644 \
+                "${license}" \
+                "${package_root}/share/doc/${safe_plugin_name}/$(basename "${license}")"
+            fi
+          done
+
+          cat > "${package_root}/INSTALL.txt" <<EOF
+          MariaDB plugin: ${plugin_name}
+          Package version: ${package_version}
+          MariaDB series: ${mariadb_version}
+          Architecture: ${architecture}
+
+          Plugin library:
+
+            lib/mariadb/plugin/${plugin_library}
+
+          Installation
+          ------------
+
+          1. Determine the MariaDB plugin directory:
+
+               SELECT @@plugin_dir;
+
+          2. Copy ${plugin_library} into that directory.
+
+          3. Follow the plugin-specific activation instructions from its
+             README file.
+
+          This binary was built from the MariaDB ${mariadb_version} source
+          branch. Use it with the corresponding MariaDB Server series.
+          EOF
+
+          tar \
+            -C "${GITHUB_WORKSPACE}/dist" \
+            -czf "${GITHUB_WORKSPACE}/dist/${package_basename}.tar.gz" \
+            "${package_basename}"
+
+          (
+            cd "${GITHUB_WORKSPACE}/dist"
+
+            sha256sum \
+              "${package_basename}.tar.gz" \
+              > "${package_basename}.tar.gz.sha256"
+          )
+
+          echo "basename=${package_basename}" >> "${GITHUB_OUTPUT}"
+
+          echo "Created package:"
+          find "${GITHUB_WORKSPACE}/dist" -maxdepth 1 -type f -print
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.basename }}
+          path: |
+            dist/${{ steps.package.outputs.basename }}.tar.gz
+            dist/${{ steps.package.outputs.basename }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention-days }}
