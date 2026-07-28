@@ -3,51 +3,51 @@ name: Build lefred MariaDB plugin
 on:
   workflow_call:
     inputs:
-      plugin-name:
+      plugin_name:
         description: Human-readable plugin name used in package names
         required: true
         type: string
 
-      plugin-directory:
+      plugin_directory:
         description: Directory name used under MariaDB server/plugin
         required: true
         type: string
 
-      build-target:
+      build_target:
         description: CMake target that builds the plugin
         required: true
         type: string
 
-      plugin-library:
+      plugin_library:
         description: Generated shared library filename, for example plugin_name.so
         required: true
         type: string
 
-      cmake-options:
+      cmake_options:
         description: Additional CMake options, for example -DPLUGIN_MY_PLUGIN=DYNAMIC
         required: false
         default: ""
         type: string
 
-      test-suite:
+      test_suite:
         description: MariaDB Test Runner suite name
         required: false
         default: ""
         type: string
 
-      run-tests:
+      run_tests:
         description: Run the MTR test suite
         required: false
         default: true
         type: boolean
 
-      package-version:
+      package_version:
         description: Version used in package filenames; defaults to tag or commit
         required: false
         default: ""
         type: string
 
-      artifact-retention-days:
+      artifact_retention_days:
         description: Number of days to retain workflow artifacts
         required: false
         default: 14
@@ -58,7 +58,7 @@ permissions:
 
 jobs:
   build:
-    name: MariaDB ${{ matrix.mariadb-version }}
+    name: MariaDB ${{ matrix.mariadb_version }}
 
     runs-on: ubuntu-24.04
 
@@ -66,23 +66,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - mariadb-version: "11.8"
-            mariadb-ref: "11.8"
+          - mariadb_version: "11.8"
+            mariadb_ref: "11.8"
 
-          - mariadb-version: "12.3"
-            mariadb-ref: "12.3"
+          - mariadb_version: "12.3"
+            mariadb_ref: "12.3"
 
     steps:
       - name: Check out plugin repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: plugin-source
 
       - name: Check out MariaDB Server
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: MariaDB/server
-          ref: ${{ matrix.mariadb-ref }}
+          ref: ${{ matrix.mariadb_ref }}
           path: mariadb-server
           fetch-depth: 1
           submodules: recursive
@@ -124,15 +124,15 @@ jobs:
         shell: bash
         run: |
           cat <<EOF
-          Plugin name:      ${{ inputs.plugin-name }}
-          Plugin directory: ${{ inputs.plugin-directory }}
-          Build target:     ${{ inputs.build-target }}
-          Plugin library:   ${{ inputs.plugin-library }}
-          MariaDB version:  ${{ matrix.mariadb-version }}
-          MariaDB ref:      ${{ matrix.mariadb-ref }}
-          CMake options:    ${{ inputs.cmake-options }}
-          Test suite:       ${{ inputs.test-suite }}
-          Run tests:        ${{ inputs.run-tests }}
+          Plugin name:      ${{ inputs.plugin_name }}
+          Plugin directory: ${{ inputs.plugin_directory }}
+          Build target:     ${{ inputs.build_target }}
+          Plugin library:   ${{ inputs.plugin_library }}
+          MariaDB version:  ${{ matrix.mariadb_version }}
+          MariaDB ref:      ${{ matrix.mariadb_ref }}
+          CMake options:    ${{ inputs.cmake_options }}
+          Test suite:       ${{ inputs.test_suite }}
+          Run tests:        ${{ inputs.run_tests }}
           EOF
 
       - name: Add plugin to MariaDB source tree
@@ -141,7 +141,7 @@ jobs:
           set -euxo pipefail
 
           plugin_source="${GITHUB_WORKSPACE}/plugin-source"
-          plugin_destination="${GITHUB_WORKSPACE}/mariadb-server/plugin/${{ inputs.plugin-directory }}"
+          plugin_destination="${GITHUB_WORKSPACE}/mariadb-server/plugin/${{ inputs.plugin_directory }}"
 
           if [[ ! -f "${plugin_source}/CMakeLists.txt" ]]; then
             echo "::error::The plugin repository does not contain CMakeLists.txt"
@@ -159,15 +159,15 @@ jobs:
           ls -ld "${plugin_destination}"
 
       - name: Add plugin test suite to MariaDB
-        if: ${{ inputs.run-tests }}
+        if: ${{ inputs.run_tests }}
         shell: bash
         run: |
           set -euxo pipefail
 
-          test_suite="${{ inputs.test-suite }}"
+          test_suite="${{ inputs.test_suite }}"
 
           if [[ -z "${test_suite}" ]]; then
-            test_suite="${{ inputs.plugin-directory }}"
+            test_suite="${{ inputs.plugin_directory }}"
           fi
 
           suite_source="${GITHUB_WORKSPACE}/plugin-source/mysql-test/${test_suite}"
@@ -198,8 +198,8 @@ jobs:
 
           extra_options=()
 
-          if [[ -n "${{ inputs.cmake-options }}" ]]; then
-            read -r -a extra_options <<< "${{ inputs.cmake-options }}"
+          if [[ -n "${{ inputs.cmake_options }}" ]]; then
+            read -r -a extra_options <<< "${{ inputs.cmake_options }}"
           fi
 
           cmake \
@@ -225,7 +225,7 @@ jobs:
 
           cmake --build build --target help |
             grep -i -E \
-              "${{ inputs.build-target }}|${{ inputs.plugin-directory }}" ||
+              "${{ inputs.build_target }}|${{ inputs.plugin_directory }}" ||
             true
 
       - name: Build plugin
@@ -235,7 +235,7 @@ jobs:
 
           cmake \
             --build build \
-            --target "${{ inputs.build-target }}" \
+            --target "${{ inputs.build_target }}" \
             --parallel "$(nproc)"
 
       - name: Locate plugin library
@@ -247,13 +247,13 @@ jobs:
           plugin_path="$(
             find build \
               -type f \
-              -name "${{ inputs.plugin-library }}" \
+              -name "${{ inputs.plugin_library }}" \
               -print \
               -quit
           )"
 
           if [[ -z "${plugin_path}" ]]; then
-            echo "::error::Could not find ${{ inputs.plugin-library }}"
+            echo "::error::Could not find ${{ inputs.plugin_library }}"
 
             echo "Shared libraries found in the build directory:"
             find build -type f -name "*.so" -print | sort || true
@@ -270,22 +270,22 @@ jobs:
           ldd "${real_plugin_path}" || true
 
       - name: Determine test suite
-        if: ${{ inputs.run-tests }}
+        if: ${{ inputs.run_tests }}
         id: test-suite
         shell: bash
         run: |
           set -euxo pipefail
 
-          test_suite="${{ inputs.test-suite }}"
+          test_suite="${{ inputs.test_suite }}"
 
           if [[ -z "${test_suite}" ]]; then
-            test_suite="${{ inputs.plugin-directory }}"
+            test_suite="${{ inputs.plugin_directory }}"
           fi
 
           echo "name=${test_suite}" >> "${GITHUB_OUTPUT}"
 
       - name: Run MTR tests
-        if: ${{ inputs.run-tests }}
+        if: ${{ inputs.run_tests }}
         shell: bash
         run: |
           set -euxo pipefail
@@ -331,7 +331,7 @@ jobs:
         run: |
           set -euxo pipefail
 
-          version="${{ inputs.package-version }}"
+          version="${{ inputs.package_version }}"
 
           if [[ -z "${version}" ]]; then
             if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
@@ -355,9 +355,9 @@ jobs:
         run: |
           set -euxo pipefail
 
-          plugin_name="${{ inputs.plugin-name }}"
-          plugin_library="${{ inputs.plugin-library }}"
-          mariadb_version="${{ matrix.mariadb-version }}"
+          plugin_name="${{ inputs.plugin_name }}"
+          plugin_library="${{ inputs.plugin_library }}"
+          mariadb_version="${{ matrix.mariadb_version }}"
           package_version="${{ steps.package-version.outputs.version }}"
           architecture="$(uname -m)"
 
@@ -456,4 +456,4 @@ jobs:
             dist/${{ steps.package.outputs.basename }}.tar.gz
             dist/${{ steps.package.outputs.basename }}.tar.gz.sha256
           if-no-files-found: error
-          retention-days: ${{ inputs.artifact-retention-days }}
+          retention-days: ${{ inputs.artifact_retention_days }}
