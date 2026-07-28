@@ -66,11 +66,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - mariadb_version: "11.8"
-            mariadb_ref: "11.8"
-
-          - mariadb_version: "12.3"
-            mariadb_ref: "12.3"
+          - mariadb_version: "13.1"
+            mariadb_ref: "13.1"
 
     steps:
       - name: Check out plugin repository
