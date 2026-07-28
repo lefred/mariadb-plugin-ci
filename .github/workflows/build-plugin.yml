@@ -295,21 +295,26 @@ jobs:
 
           echo "name=${test_suite}" >> "${GITHUB_OUTPUT}"
 
-      - name: Check VMSTAT test suite
+      - name: Build MTR test infrastructure
         if: ${{ inputs.run_tests }}
         shell: bash
         run: |
           set -euxo pipefail
 
-          ls -ld \
-            "mariadb-server/mysql-test/suite/${{ inputs.test_suite }}" \
-            "build/mysql-test/suite/${{ inputs.test_suite }}" || true
+          cmake \
+            --build build \
+            --target my_safe_process \
+            --parallel "$(nproc)"
 
-          find \
-            "build/mysql-test/suite/${{ inputs.test_suite }}" \
-            -maxdepth 2 \
-            -type f \
-            -print || true
+          cmake \
+            --build build \
+            --target mariadb-test \
+            --parallel "$(nproc)"
+
+          cmake \
+            --build build \
+            --target mariadbd mariadb-test my_safe_process \
+            --parallel "$(nproc)"
 
       - name: Run MTR tests
         if: ${{ inputs.run_tests }}
@@ -318,25 +323,23 @@ jobs:
           set -euxo pipefail
 
           test_suite="${{ steps.test-suite.outputs.name }}"
+          suite_directory="mariadb-server/mysql-test/suite/${test_suite}"
 
-          if [[ ! -d "build/mysql-test/suite/${test_suite}" ]]; then
-            echo "::error::MTR suite not found in build tree: build/mysql-test/suite/${test_suite}"
-
-            echo "Available build-tree suites:"
-            find build/mysql-test/suite \
-              -mindepth 1 \
-              -maxdepth 1 \
-              -type d \
-              -printf '%f\n' |
-              sort || true
-
+          if [[ ! -d "${suite_directory}" ]]; then
+            echo "::error::MTR suite not found: ${suite_directory}"
             exit 1
           fi
 
-          cd build/mysql-test
+          source_directory="${GITHUB_WORKSPACE}/mariadb-server"
+          build_directory="${GITHUB_WORKSPACE}/build"
+
+          cd "${source_directory}/mysql-test"
 
           perl mariadb-test-run.pl \
+            --builddir="${build_directory}" \
             --suite="${test_suite}" \
+            --vardir="${RUNNER_TEMP}/mtr-${test_suite}-${{ matrix.mariadb_version }}" \
+            --tmpdir="${RUNNER_TEMP}/mtr-tmp-${test_suite}-${{ matrix.mariadb_version }}" \
             --force \
             --retry=1
 
