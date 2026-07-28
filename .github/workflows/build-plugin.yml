@@ -331,7 +331,7 @@ jobs:
 
           cmake \
             --build build \
-            --target minibuild \
+            --target minbuild \
             --parallel "$(nproc)"
 
           cmake \
