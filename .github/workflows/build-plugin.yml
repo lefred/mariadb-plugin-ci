@@ -498,7 +498,7 @@ jobs:
           find "${GITHUB_WORKSPACE}/dist" -maxdepth 1 -type f -print
 
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.package.outputs.basename }}
           path: |
