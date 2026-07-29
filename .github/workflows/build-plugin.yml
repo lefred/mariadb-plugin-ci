@@ -222,18 +222,19 @@ jobs:
         run: |
           set -euxo pipefail
 
+          target="${{ inputs.build_target }}"
+
           if ! cmake --build build --target help |
-               grep -Fxq "${{ inputs.build_target }}"; then
-            echo "::error::CMake target '${{ inputs.build_target }}' was not generated"
-            echo
-            echo "This usually means that the plugin was disabled because"
-            echo "a required development library or header was not detected."
+               grep -Eq "^${target}(:|[[:space:]])"; then
+            echo "::error::CMake target '${target}' was not generated"
             echo
             echo "Matching targets:"
             cmake --build build --target help |
               grep -i "${{ inputs.plugin_directory }}" || true
             exit 1
           fi
+
+          echo "CMake target '${target}' is available"
 
       - name: Add test suite to build tree
         if: ${{ inputs.run_tests }}
