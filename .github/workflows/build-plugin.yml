@@ -263,17 +263,6 @@ jobs:
             --target "${{ inputs.build_target }}" \
             --parallel "$(nproc)"
 
-      - name: Build MTR test infrastructure
-        if: ${{ inputs.run_tests }}
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          cmake \
-            --build build \
-            --target mariadb-test \
-            --parallel "$(nproc)"
-
       - name: Locate plugin library
         id: locate-plugin
         shell: bash
@@ -329,16 +318,6 @@ jobs:
           cmake \
             --build build \
             --target minbuild \
-            --parallel "$(nproc)"
-
-          cmake \
-            --build build \
-            --target mariadb-test \
-            --parallel "$(nproc)"
-
-          cmake \
-            --build build \
-            --target mariadbd mariadb-test my_safe_process \
             --parallel "$(nproc)"
 
       - name: Run MTR tests
