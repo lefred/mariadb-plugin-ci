@@ -98,8 +98,10 @@ jobs:
             cmake \
             git \
             libaio-dev \
+            libargon2-dev \
             libboost-dev \
             libboost-program-options-dev \
+            libclamav-dev \
             libcurl4-openssl-dev \
             libevent-dev \
             libfmt-dev \
@@ -214,6 +216,24 @@ jobs:
             -DPLUGIN_SPIDER=NO \
             -DWITH_WSREP=OFF \
             "${extra_options[@]}"
+
+      - name: Verify requested plugin target exists
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          if ! cmake --build build --target help |
+               grep -Fxq "${{ inputs.build_target }}"; then
+            echo "::error::CMake target '${{ inputs.build_target }}' was not generated"
+            echo
+            echo "This usually means that the plugin was disabled because"
+            echo "a required development library or header was not detected."
+            echo
+            echo "Matching targets:"
+            cmake --build build --target help |
+              grep -i "${{ inputs.plugin_directory }}" || true
+            exit 1
+          fi
 
       - name: Add test suite to build tree
         if: ${{ inputs.run_tests }}
