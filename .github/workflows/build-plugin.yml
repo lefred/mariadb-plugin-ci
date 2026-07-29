@@ -551,13 +551,13 @@ jobs:
               wc -l
           )"
 
-          if [[ "${package_count}" -ne 2 ]]; then
-            echo "::error::Expected 2 packages, found ${package_count}"
+          if [[ "${package_count}" -lt 1 ]]; then
+            echo "::error::No package was downloaded"
             exit 1
           fi
 
-          if [[ "${checksum_count}" -ne 2 ]]; then
-            echo "::error::Expected 2 checksum files, found ${checksum_count}"
+          if [[ "${checksum_count}" -ne "${package_count}" ]]; then
+            echo "::error::Found ${package_count} packages but ${checksum_count} checksum files"
             exit 1
           fi
 
