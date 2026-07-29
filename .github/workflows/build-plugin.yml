@@ -317,7 +317,7 @@ jobs:
 
           cmake \
             --build build \
-            --target minbuild \
+            --target minbuild resolveip \
             --parallel "$(nproc)"
 
       - name: Run MTR tests
