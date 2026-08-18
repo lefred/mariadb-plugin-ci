@@ -113,6 +113,7 @@ jobs:
             libsystemd-dev \
             libxml2-dev \
             libzstd-dev \
+            libtcmalloc-mininal4-dev \
             ninja-build \
             pkg-config \
             perl \
