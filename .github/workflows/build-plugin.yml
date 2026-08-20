@@ -103,7 +103,7 @@ jobs:
             libboost-program-options-dev \
             libclamav-dev \
             libcurl4-openssl-dev \
-            libarchive \
+            libarchive-dev \
             libevent-dev \
             libfmt-dev \
             libjudy-dev \
