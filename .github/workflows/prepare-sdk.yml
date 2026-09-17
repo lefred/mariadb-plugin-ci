@@ -8,7 +8,7 @@ on:
         type: string
       image_repository:
         description: Registry repository to publish
-        default: quay.io/lefred/mariadb-plugin-build
+        default: quay.io/lefred14/mariadb-plugin-build
         type: string
       include_galera:
         description: Include Galera installation rules (use a separate repository for variants)
