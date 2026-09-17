@@ -9,13 +9,15 @@ on:
         type: string
 
       plugin_directory:
-        description: Directory name used under MariaDB server/plugin
-        required: true
+        description: Directory name under MariaDB server/plugin; defaults to repository name
+        required: false
+        default: ""
         type: string
 
       build_target:
-        description: CMake target that builds the plugin
-        required: true
+        description: CMake target; empty enables detection
+        required: false
+        default: ""
         type: string
 
       plugin_library:
@@ -53,333 +55,166 @@ on:
         default: 14
         type: number
 
+      mariadb_versions:
+        description: Exact x.y.z releases, one per line or a JSON array (required for reproducibility)
+        required: true
+        type: string
+      sdk_image:
+        description: Prepared image repository; version is appended as its tag
+        default: quay.io/lefred/mariadb-plugin-build
+        type: string
+      sdk_images:
+        description: Optional JSON object mapping exact releases to full image references (prefer digests)
+        default: '{}'
+        type: string
+      extra_packages:
+        description: Optional RPM package specifications; prefer baking dependencies into the SDK
+        default: ''
+        type: string
+      test_runtime:
+        description: Path inside a custom SDK to a matching prebuilt MariaDB binary distribution with MTR
+        default: ''
+        type: string
+
 permissions:
   contents: read
 
 jobs:
+  versions:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        name: Validate exact releases and resolve SDK images
+        env:
+          VERSIONS: ${{ inputs.mariadb_versions }}
+          SDK_IMAGE: ${{ inputs.sdk_image }}
+          SDK_IMAGES: ${{ inputs.sdk_images }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, re
+          raw = os.environ['VERSIONS'].strip()
+          versions = json.loads(raw) if raw.startswith('[') else raw.split()
+          if not isinstance(versions, list) or not versions or len(versions) > 256:
+              raise SystemExit('mariadb_versions must contain 1..256 exact releases')
+          images = json.loads(os.environ['SDK_IMAGES'])
+          if not isinstance(images, dict):
+              raise SystemExit('sdk_images must be a JSON object')
+          matrix = []
+          for version in versions:
+              if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
+                  raise SystemExit('Use exact MariaDB releases (x.y.z), not branches or wildcards')
+              image = images.get(version, os.environ['SDK_IMAGE'] + ':' + version)
+              if not isinstance(image, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9./:@_-]*', image):
+                  raise SystemExit('Invalid SDK image reference')
+              row = {'mariadb_version': version, 'image': image}
+              if row not in matrix:
+                  matrix.append(row)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('matrix=' + json.dumps({'include': matrix}) + '\n')
+          PYTHON
+
   build:
     name: MariaDB ${{ matrix.mariadb_version }}
-
+    needs: versions
     runs-on: ubuntu-24.04
-
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - mariadb_version: "13.1"
-            mariadb_ref: "main"
-
+      matrix: ${{ fromJSON(needs.versions.outputs.matrix) }}
+    container:
+      image: ${{ matrix.image }}
+      options: --user root
+    defaults:
+      run:
+        shell: bash
+    env:
+      PLUGIN_DIRECTORY: ${{ inputs.plugin_directory }}
+      PLUGIN_LIBRARY: ${{ inputs.plugin_library }}
+      CMAKE_OPTIONS: ${{ inputs.cmake_options }}
+      MARIADB_VERSION: ${{ matrix.mariadb_version }}
     steps:
-      - name: Check out plugin repository
+      - name: Check out plugin repository at triggering commit
         uses: actions/checkout@v5
         with:
           path: plugin-source
-
-      - name: Check out MariaDB Server
-        uses: actions/checkout@v5
-        with:
-          repository: MariaDB/server
-          ref: ${{ matrix.mariadb_ref }}
-          path: mariadb-server
-          fetch-depth: 1
           submodules: recursive
 
-      - name: Install build dependencies
-        shell: bash
+      - name: Verify prepared SDK and test runtime
+        env:
+          RUN_TESTS: ${{ inputs.run_tests }}
+          TEST_RUNTIME: ${{ inputs.test_runtime }}
         run: |
-          set -euxo pipefail
-
-          sudo apt-get update
-
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            build-essential \
-            bison \
-            ccache \
-            cmake \
-            git \
-            libaio-dev \
-            libargon2-dev \
-            libboost-dev \
-            libboost-program-options-dev \
-            libclamav-dev \
-            libcurl4-openssl-dev \
-            libarchive-dev \
-            libevent-dev \
-            libfmt-dev \
-            libjudy-dev \
-            libncurses-dev \
-            libpcre2-dev \
-            libreadline-dev \
-            libssl-dev \
-            libsystemd-dev \
-            libxml2-dev \
-            libzstd-dev \
-            libtcmalloc-minimal4 \
-            ninja-build \
-            pkg-config \
-            perl \
-            rsync \
-            zlib1g-dev
-
-      - name: Display build parameters
-        shell: bash
-        run: |
-          cat <<EOF
-          Plugin name:      ${{ inputs.plugin_name }}
-          Plugin directory: ${{ inputs.plugin_directory }}
-          Build target:     ${{ inputs.build_target }}
-          Plugin library:   ${{ inputs.plugin_library }}
-          MariaDB version:  ${{ matrix.mariadb_version }}
-          MariaDB ref:      ${{ matrix.mariadb_ref }}
-          CMake options:    ${{ inputs.cmake_options }}
-          Test suite:       ${{ inputs.test_suite }}
-          Run tests:        ${{ inputs.run_tests }}
-          EOF
-
-      - name: Add plugin to MariaDB source tree
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          plugin_source="${GITHUB_WORKSPACE}/plugin-source"
-          plugin_destination="${GITHUB_WORKSPACE}/mariadb-server/plugin/${{ inputs.plugin_directory }}"
-
-          if [[ ! -f "${plugin_source}/CMakeLists.txt" ]]; then
-            echo "::error::The plugin repository does not contain CMakeLists.txt"
+          set -euo pipefail
+          test "$(cat /home/buildbot/mariadb-sdk-version)" = "$MARIADB_VERSION" || {
+            echo '::error::SDK version does not match the requested MariaDB release'; exit 1;
+          }
+          test -f /home/buildbot/mariadb-server/build/CMakeCache.txt
+          test -x /home/buildbot/bin/build-plugin
+          test -x /home/buildbot/bin/package-plugin
+          if [[ "$RUN_TESTS" == true && ! -f "$TEST_RUNTIME/mysql-test/mariadb-test-run.pl" ]]; then
+            echo '::error::run_tests requires test_runtime pointing to a matching prebuilt MariaDB distribution with MTR. Use run_tests: false for SDK-only builds.'
             exit 1
           fi
 
-          if [[ -e "${plugin_destination}" ]]; then
-            echo "::error::MariaDB already contains ${plugin_destination}"
-            exit 1
-          fi
-
-          ln -s "${plugin_source}" "${plugin_destination}"
-
-          echo "Plugin link:"
-          ls -ld "${plugin_destination}"
-
-      - name: Add plugin test suite to MariaDB
-        if: ${{ inputs.run_tests }}
-        shell: bash
+      - name: Install optional plugin dependencies
+        env:
+          EXTRA_PACKAGES: ${{ inputs.extra_packages }}
         run: |
-          set -euxo pipefail
-
-          test_suite="${{ inputs.test_suite }}"
-
-          if [[ -z "${test_suite}" ]]; then
-            test_suite="${{ inputs.plugin_directory }}"
+          set -euo pipefail
+          if [[ -n "$EXTRA_PACKAGES" ]]; then
+            read -r -a packages <<< "$EXTRA_PACKAGES"
+            dnf install -y -- "${packages[@]}"
           fi
 
-          suite_source="${GITHUB_WORKSPACE}/plugin-source/mysql-test/${test_suite}"
-          suite_destination="${GITHUB_WORKSPACE}/mariadb-server/mysql-test/suite/${test_suite}"
-
-          if [[ ! -d "${suite_source}" ]]; then
-            echo "::error::Plugin test suite not found: ${suite_source}"
-            exit 1
-          fi
-
-          if [[ -e "${suite_destination}" ]]; then
-            echo "::error::MariaDB already contains test suite: ${suite_destination}"
-            exit 1
-          fi
-
-          ln -s "${suite_source}" "${suite_destination}"
-
-          echo "Test suite link:"
-          ls -ld "${suite_destination}"
-
-          echo "Test suite files:"
-          find "${suite_source}" -maxdepth 2 -type f -print | sort
-
-      - name: Configure MariaDB
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          extra_options=()
-
-          if [[ -n "${{ inputs.cmake_options }}" ]]; then
-            read -r -a extra_options <<< "${{ inputs.cmake_options }}"
-          fi
-
-          cmake \
-            -S mariadb-server \
-            -B build \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DWITH_UNIT_TESTS=OFF \
-            -DWITH_EMBEDDED_SERVER=OFF \
-            -DPLUGIN_COLUMNSTORE=NO \
-            -DPLUGIN_CONNECT=NO \
-            -DPLUGIN_MROONGA=NO \
-            -DPLUGIN_ROCKSDB=NO \
-            -DPLUGIN_S3=NO \
-            -DPLUGIN_SPIDER=NO \
-            -DWITH_WSREP=OFF \
-            "${extra_options[@]}"
-
-      - name: Verify requested plugin target exists
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          target="${{ inputs.build_target }}"
-
-          if ! cmake --build build --target help |
-               grep -Eq "^${target}(:|[[:space:]])"; then
-            echo "::error::CMake target '${target}' was not generated"
-            echo
-            echo "Matching targets:"
-            cmake --build build --target help |
-              grep -i "${{ inputs.plugin_directory }}" || true
-            exit 1
-          fi
-
-          echo "CMake target '${target}' is available"
-
-      - name: Add test suite to build tree
-        if: ${{ inputs.run_tests }}
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          test_suite="${{ inputs.test_suite }}"
-
-          if [[ -z "${test_suite}" ]]; then
-            test_suite="${{ inputs.plugin_directory }}"
-          fi
-
-          suite_source="${GITHUB_WORKSPACE}/plugin-source/mysql-test/${test_suite}"
-          suite_destination="${GITHUB_WORKSPACE}/build/mysql-test/suite/${test_suite}"
-
-          if [[ ! -d "${suite_source}" ]]; then
-            echo "::error::Test suite source not found: ${suite_source}"
-            exit 1
-          fi
-
-          mkdir -p "${GITHUB_WORKSPACE}/build/mysql-test/suite"
-
-          rm -rf "${suite_destination}"
-          ln -s "${suite_source}" "${suite_destination}"
-
-          ls -ld "${suite_destination}"
-          find "${suite_destination}" -maxdepth 2 -type f -print
-
-      - name: Show matching build targets
-        shell: bash
-        run: |
-          set -o pipefail
-
-          cmake --build build --target help |
-            grep -i -E \
-              "${{ inputs.build_target }}|${{ inputs.plugin_directory }}" ||
-            true
-
-      - name: Build plugin
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          cmake \
-            --build build \
-            --target "${{ inputs.build_target }}" \
-            --parallel "$(nproc)"
-
-      - name: Locate plugin library
+      - name: Build only the plugin target
         id: locate-plugin
-        shell: bash
+        env:
+          BUILD_TARGET: ${{ inputs.build_target }}
+          PLUGIN_SOURCE: ${{ github.workspace }}/plugin-source
+          PLUGIN_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}.git
         run: |
-          set -euxo pipefail
+          set -euo pipefail
+          # The source tree belongs to buildbot; checkout and build run as container root.
+          git config --global --add safe.directory /home/buildbot/mariadb-server
+          /home/buildbot/bin/build-plugin "$PLUGIN_REPOSITORY" "$BUILD_TARGET"
 
-          plugin_path="$(
-            find build \
-              -type f \
-              -name "${{ inputs.plugin_library }}" \
-              -print \
-              -quit
-          )"
-
-          if [[ -z "${plugin_path}" ]]; then
-            echo "::error::Could not find ${{ inputs.plugin_library }}"
-
-            echo "Shared libraries found in the build directory:"
-            find build -type f -name "*.so" -print | sort || true
-
-            exit 1
-          fi
-
-          real_plugin_path="$(realpath "${plugin_path}")"
-
-          echo "path=${real_plugin_path}" >> "${GITHUB_OUTPUT}"
-
-          echo "Found plugin library:"
-          file "${real_plugin_path}"
-          ldd "${real_plugin_path}" || true
-
-      - name: Determine test suite
+      - name: Run MTR using prebuilt runtime
         if: ${{ inputs.run_tests }}
-        id: test-suite
-        shell: bash
+        env:
+          TEST_RUNTIME: ${{ inputs.test_runtime }}
+          TEST_SUITE: ${{ inputs.test_suite }}
+          PLUGIN_PATH: ${{ steps.locate-plugin.outputs.path }}
         run: |
-          set -euxo pipefail
-
-          test_suite="${{ inputs.test_suite }}"
-
-          if [[ -z "${test_suite}" ]]; then
-            test_suite="${{ inputs.plugin_directory }}"
-          fi
-
-          echo "name=${test_suite}" >> "${GITHUB_OUTPUT}"
-
-      - name: Build MTR test infrastructure
-        if: ${{ inputs.run_tests }}
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          cmake \
-            --build build \
-            --target minbuild resolveip \
-            --parallel "$(nproc)"
-
-      - name: Run MTR tests
-        if: ${{ inputs.run_tests }}
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          test_suite="${{ steps.test-suite.outputs.name }}"
-          mtr_directory="${GITHUB_WORKSPACE}/build/mysql-test"
-          suite_directory="${mtr_directory}/suite/${test_suite}"
-
-          if [[ ! -f "${mtr_directory}/mariadb-test-run.pl" ]]; then
-            echo "::error::Out-of-source MTR wrapper not found"
-            find build/mysql-test -maxdepth 2 -type f -print || true
-            exit 1
-          fi
-
-          if [[ ! -d "${suite_directory}" ]]; then
-            echo "::error::MTR suite not found: ${suite_directory}"
-            exit 1
-          fi
-
-          cd "${mtr_directory}"
-
-          perl mariadb-test-run.pl \
-            --suite="${test_suite}" \
-            --vardir="${RUNNER_TEMP}/mtr-${test_suite}-${{ matrix.mariadb_version }}" \
-            --tmpdir="${RUNNER_TEMP}/mtr-tmp-${test_suite}-${{ matrix.mariadb_version }}" \
-            --force \
-            --retry=1
+          set -euo pipefail
+          suite="${TEST_SUITE:-${PLUGIN_DIRECTORY:-${GITHUB_REPOSITORY##*/}}}"
+          [[ "$suite" =~ ^[A-Za-z0-9_][A-Za-z0-9_.+-]*$ ]] || { echo 'Invalid test suite'; exit 1; }
+          server="$TEST_RUNTIME/bin/mariadbd"
+          [[ -x "$server" ]] || server="$TEST_RUNTIME/bin/mysqld"
+          "$server" --version | grep -F " $MARIADB_VERSION-" >/dev/null || {
+            echo '::error::Prebuilt test server version does not match SDK'; exit 1;
+          }
+          suite_source="$GITHUB_WORKSPACE/plugin-source/mysql-test/$suite"
+          test -d "$suite_source" || { echo "::error::Missing test suite: $suite_source"; exit 1; }
+          test ! -e "$TEST_RUNTIME/mysql-test/suite/$suite" || { echo '::error::Test suite destination exists'; exit 1; }
+          ln -s "$suite_source" "$TEST_RUNTIME/mysql-test/suite/$suite"
+          mkdir -p "$RUNNER_TEMP/test-plugins"
+          cp "$PLUGIN_PATH" "$RUNNER_TEMP/test-plugins/$PLUGIN_LIBRARY"
+          cd "$TEST_RUNTIME/mysql-test"
+          perl mariadb-test-run.pl --suite="$suite" \
+            --mysqld="--plugin-dir=$RUNNER_TEMP/test-plugins" \
+            --vardir="$RUNNER_TEMP/mtr-$suite-$MARIADB_VERSION" \
+            --tmpdir="$RUNNER_TEMP/mtr-tmp-$suite-$MARIADB_VERSION" --force --retry=1
 
       - name: Determine package version
         id: package-version
+        env:
+          INPUT_VERSION: ${{ inputs.package_version }}
         shell: bash
         run: |
           set -euxo pipefail
 
-          version="${{ inputs.package_version }}"
+          version="$INPUT_VERSION"
 
           if [[ -z "${version}" ]]; then
             if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
@@ -399,102 +234,12 @@ jobs:
 
       - name: Create binary package
         id: package
+        env:
+          PLUGIN_NAME: ${{ inputs.plugin_name }}
+          PACKAGE_VERSION: ${{ steps.package-version.outputs.version }}
+          PLUGIN_PATH: ${{ steps.locate-plugin.outputs.path }}
         shell: bash
-        run: |
-          set -euxo pipefail
-
-          plugin_name="${{ inputs.plugin_name }}"
-          plugin_library="${{ inputs.plugin_library }}"
-          mariadb_version="${{ matrix.mariadb_version }}"
-          package_version="${{ steps.package-version.outputs.version }}"
-          architecture="$(uname -m)"
-
-          safe_plugin_name="$(
-            printf '%s' "${plugin_name}" |
-              tr '[:upper:]' '[:lower:]' |
-              sed -E 's/[^a-z0-9._+-]+/-/g'
-          )"
-
-          package_basename="${safe_plugin_name}-${package_version}-mariadb${mariadb_version}-linux-${architecture}"
-          package_root="${GITHUB_WORKSPACE}/dist/${package_basename}"
-
-          mkdir -p "${package_root}/lib/mariadb/plugin"
-          mkdir -p "${package_root}/share/doc/${safe_plugin_name}"
-
-          install \
-            -m 0755 \
-            "${{ steps.locate-plugin.outputs.path }}" \
-            "${package_root}/lib/mariadb/plugin/${plugin_library}"
-
-          for readme in \
-            plugin-source/README \
-            plugin-source/README.md \
-            plugin-source/README.txt
-          do
-            if [[ -f "${readme}" ]]; then
-              install \
-                -m 0644 \
-                "${readme}" \
-                "${package_root}/share/doc/${safe_plugin_name}/$(basename "${readme}")"
-            fi
-          done
-
-          for license in \
-            plugin-source/LICENSE \
-            plugin-source/LICENSE.md \
-            plugin-source/COPYING
-          do
-            if [[ -f "${license}" ]]; then
-              install \
-                -m 0644 \
-                "${license}" \
-                "${package_root}/share/doc/${safe_plugin_name}/$(basename "${license}")"
-            fi
-          done
-
-          cat > "${package_root}/INSTALL.txt" <<EOF
-          MariaDB plugin: ${plugin_name}
-          Package version: ${package_version}
-          MariaDB series: ${mariadb_version}
-          Architecture: ${architecture}
-
-          Plugin library:
-
-            lib/mariadb/plugin/${plugin_library}
-
-          Installation
-          ------------
-
-          1. Determine the MariaDB plugin directory:
-
-               SELECT @@plugin_dir;
-
-          2. Copy ${plugin_library} into that directory.
-
-          3. Follow the plugin-specific activation instructions from its
-             README file.
-
-          This binary was built from the MariaDB ${mariadb_version} source
-          branch. Use it with the corresponding MariaDB Server series.
-          EOF
-
-          tar \
-            -C "${GITHUB_WORKSPACE}/dist" \
-            -czf "${GITHUB_WORKSPACE}/dist/${package_basename}.tar.gz" \
-            "${package_basename}"
-
-          (
-            cd "${GITHUB_WORKSPACE}/dist"
-
-            sha256sum \
-              "${package_basename}.tar.gz" \
-              > "${package_basename}.tar.gz.sha256"
-          )
-
-          echo "basename=${package_basename}" >> "${GITHUB_OUTPUT}"
-
-          echo "Created package:"
-          find "${GITHUB_WORKSPACE}/dist" -maxdepth 1 -type f -print
+        run: /home/buildbot/bin/package-plugin
 
       - name: Upload package
         uses: actions/upload-artifact@v7
@@ -525,6 +270,7 @@ jobs:
         with:
           path: release-assets
           merge-multiple: true
+          pattern: "*-mariadb*-linux-*"
 
       - name: Display release assets
         shell: bash

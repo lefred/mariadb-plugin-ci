@@ -37,3 +37,8 @@ jobs:
 
       - name: Validate GitHub Actions workflows
         run: actionlint
+
+      - name: Validate SDK helpers and packaging
+        run: |
+          bash -n sdk/prepare scripts/package-plugin
+          python3 -m unittest discover -s tests -v

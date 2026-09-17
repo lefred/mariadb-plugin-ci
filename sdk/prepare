@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ ${MARIADB_VERSION:-} =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'MARIADB_VERSION must be an exact x.y.z release' >&2; exit 1; }
+[[ ${INCLUDE_GALERA:-false} =~ ^(true|false)$ ]] || { echo 'INCLUDE_GALERA must be true or false' >&2; exit 1; }
+cd /home/buildbot
+git clone --branch "mariadb-${MARIADB_VERSION}" --depth 1 --recurse-submodules --shallow-submodules https://github.com/MariaDB/server.git mariadb-server
+cd mariadb-server
+# A branch with the same name must never substitute for the release tag.
+test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/mariadb-${MARIADB_VERSION}^{commit}")"
+git checkout --detach HEAD
+if [[ ${INCLUDE_GALERA:-false} == true ]]; then
+  for file in /usr/lib64/galera-4/libgalera_smm.so /usr/bin/garbd /usr/bin/garb-systemd; do
+    test -f "$file" || { echo "Missing Galera file: $file" >&2; exit 1; }
+  done
+  cat > cmake/galera.cmake <<'CMAKE'
+install(
+  FILES /usr/lib64/galera-4/libgalera_smm.so
+  DESTINATION lib
+)
+
+install(
+  PROGRAMS /usr/bin/garbd
+  DESTINATION bin
+)
+
+install(
+  PROGRAMS /usr/bin/garb-systemd
+  DESTINATION bin
+)
+CMAKE
+  python3 - <<'PY'
+from pathlib import Path
+p = Path('CMakeLists.txt')
+s = p.read_text()
+anchor = '''IF(CMAKE_CROSSCOMPILING AND NOT DEFINED CMAKE_CROSSCOMPILING_EMULATOR)
+  SET(IMPORT_EXECUTABLES "IMPORTFILE-NOTFOUND" CACHE FILEPATH "Path to import_executables.cmake from a native build")
+  INCLUDE(${IMPORT_EXECUTABLES})
+ENDIF()'''
+if s.count(anchor) != 1:
+    raise SystemExit('Expected cross-compilation block not found exactly once; review this release')
+p.write_text(s.replace(anchor, anchor + '\nINCLUDE(cmake/galera.cmake)'))
+PY
+fi
+mkdir build
+cd build
+export CMAKE_LIBRARY_PATH=/scripts/local/lib/
+export WSREP_PROVIDER=/usr/lib64/galera-4/libgalera_smm.so
+cmake .. -DBUILD_CONFIG=mysql_release -DWITH_SYSTEMD=yes -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENABLE_DTRACE=ON
+printf '%s\n' "$MARIADB_VERSION" > /home/buildbot/mariadb-sdk-version
+git rev-parse HEAD > /home/buildbot/mariadb-sdk-commit

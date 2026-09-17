@@ -1,0 +1,22 @@
+name: Release Viruscan
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    uses: lefred/mariadb-plugin-ci/.github/workflows/build-plugin.yml@main
+    with:
+      plugin_name: viruscan
+      plugin_directory: viruscan
+      build_target: viruscan
+      plugin_library: viruscan.so
+      mariadb_versions: |
+        11.8.5
+        12.3.3
+        13.0.2
+        13.1.1
+      cmake_options: -DPLUGIN_VIRUSCAN=DYNAMIC -DWITH_SSL=system
+      run_tests: false

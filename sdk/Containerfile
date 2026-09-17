@@ -1,0 +1,24 @@
+ARG BASE_IMAGE=quay.io/mariadb-foundation/bb-worker:almalinux8-bintar
+FROM ${BASE_IMAGE}
+USER root
+# Bake plugin dependencies into the image; pin this image by digest in consumers.
+ARG EXTRA_PACKAGES="clamav-devel libcurl-devel libarchive-devel openssl-devel"
+RUN dnf install -y epel-release && dnf install -y python3 git ${EXTRA_PACKAGES} && dnf clean all
+COPY sdk/prepare /home/buildbot/bin/prepare-plugin-sdk
+RUN chmod 0755 /home/buildbot/bin/prepare-plugin-sdk && chown -R buildbot:buildbot /home/buildbot/bin
+USER buildbot
+ARG MARIADB_VERSION
+ARG INCLUDE_GALERA=false
+ENV CMAKE_LIBRARY_PATH=/scripts/local/lib/ WSREP_PROVIDER=/usr/lib64/galera-4/libgalera_smm.so
+ENV PATH=/home/buildbot/bin:${PATH}
+RUN /home/buildbot/bin/prepare-plugin-sdk
+# Helper updates reuse the expensive configured-source layer.
+USER root
+COPY scripts/build-plugin scripts/package-plugin /home/buildbot/bin/
+RUN chmod 0755 /home/buildbot/bin/build-plugin /home/buildbot/bin/package-plugin && chown -R buildbot:buildbot /home/buildbot/bin
+# GitHub job containers run as root; trust only the SDK's known source repositories.
+RUN find /home/buildbot/mariadb-server -name .git -print -prune | while IFS= read -r git_dir; do git config --system --add safe.directory "${git_dir%/.git}"; done
+USER buildbot
+WORKDIR /home/buildbot/mariadb-server/build
+ENTRYPOINT []
+CMD ["/bin/bash"]

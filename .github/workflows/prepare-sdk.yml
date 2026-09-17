@@ -1,0 +1,55 @@
+name: Prepare MariaDB plugin SDK
+on:
+  workflow_dispatch:
+    inputs:
+      mariadb_version:
+        description: Exact released MariaDB version (x.y.z)
+        required: true
+        type: string
+      image_repository:
+        description: Registry repository to publish
+        default: quay.io/lefred/mariadb-plugin-build
+        type: string
+      include_galera:
+        description: Include Galera installation rules (use a separate repository for variants)
+        default: false
+        type: boolean
+      extra_packages:
+        description: RPM dependencies baked into the SDK (prefer pinned package versions)
+        default: clamav-devel libcurl-devel libarchive-devel openssl-devel
+        type: string
+      base_image:
+        description: Build worker image (use a digest for reproducibility)
+        default: quay.io/mariadb-foundation/bb-worker:almalinux8-bintar
+        type: string
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ inputs.mariadb_version }}
+      IMAGE: ${{ inputs.image_repository }}
+      GALERA: ${{ inputs.include_galera }}
+      EXTRA_PACKAGES: ${{ inputs.extra_packages }}
+      BASE_IMAGE: ${{ inputs.base_image }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure SDK without compiling MariaDB
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected exact x.y.z release'; exit 1; }
+          podman build -f sdk/Containerfile -t "$IMAGE:$VERSION" \
+            --build-arg "MARIADB_VERSION=$VERSION" \
+            --build-arg "BASE_IMAGE=$BASE_IMAGE" \
+            --build-arg "INCLUDE_GALERA=$GALERA" \
+            --build-arg "EXTRA_PACKAGES=$EXTRA_PACKAGES" .
+      - name: Publish SDK
+        env:
+          REGISTRY_USER: ${{ secrets.SDK_REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.SDK_REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_PASSWORD" | podman login "${IMAGE%%/*}" --username "$REGISTRY_USER" --password-stdin
+          podman push --digestfile sdk.digest "$IMAGE:$VERSION"
+          echo "Prepared SDK: $IMAGE@$(cat sdk.digest)" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Retained from the original reusable workflow; also usable locally.
+set -euo pipefail
+
+plugin_name="$PLUGIN_NAME"
+plugin_library="$PLUGIN_LIBRARY"
+mariadb_version="$MARIADB_VERSION"
+package_version="$PACKAGE_VERSION"
+architecture="$(uname -m)"
+[[ "$plugin_library" =~ ^[A-Za-z0-9_][A-Za-z0-9_.+-]*$ ]] || { echo 'Invalid plugin library filename' >&2; exit 1; }
+[[ "$mariadb_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected exact MariaDB version' >&2; exit 1; }
+[[ "$package_version" =~ ^[A-Za-z0-9_][A-Za-z0-9_.+-]*$ ]] || { echo 'Invalid package version' >&2; exit 1; }
+
+safe_plugin_name="$(
+  printf '%s' "${plugin_name}" |
+    tr '[:upper:]' '[:lower:]' |
+    sed -E 's/[^a-z0-9._+-]+/-/g'
+)"
+
+[[ "$safe_plugin_name" =~ ^[a-z0-9_][a-z0-9_.+-]*$ ]] || { echo 'Invalid plugin name' >&2; exit 1; }
+
+package_basename="${safe_plugin_name}-${package_version}-mariadb${mariadb_version}-linux-${architecture}"
+package_root="${GITHUB_WORKSPACE}/dist/${package_basename}"
+
+mkdir -p "${package_root}/lib/mariadb/plugin"
+mkdir -p "${package_root}/share/doc/${safe_plugin_name}"
+
+install \
+  -m 0755 \
+  "$PLUGIN_PATH" \
+  "${package_root}/lib/mariadb/plugin/${plugin_library}"
+
+for readme in \
+  "${PLUGIN_SOURCE:-$GITHUB_WORKSPACE/plugin-source}"/README \
+  "${PLUGIN_SOURCE:-$GITHUB_WORKSPACE/plugin-source}"/README.md \
+  "${PLUGIN_SOURCE:-$GITHUB_WORKSPACE/plugin-source}"/README.txt
+do
+  if [[ -f "${readme}" ]]; then
+    install \
+      -m 0644 \
+      "${readme}" \
+      "${package_root}/share/doc/${safe_plugin_name}/$(basename "${readme}")"
+  fi
+done
+
+for license in \
+  "${PLUGIN_SOURCE:-$GITHUB_WORKSPACE/plugin-source}"/LICENSE \
+  "${PLUGIN_SOURCE:-$GITHUB_WORKSPACE/plugin-source}"/LICENSE.md \
+  "${PLUGIN_SOURCE:-$GITHUB_WORKSPACE/plugin-source}"/COPYING
+do
+  if [[ -f "${license}" ]]; then
+    install \
+      -m 0644 \
+      "${license}" \
+      "${package_root}/share/doc/${safe_plugin_name}/$(basename "${license}")"
+  fi
+done
+
+cat > "${package_root}/INSTALL.txt" <<EOF
+MariaDB plugin: ${plugin_name}
+Package version: ${package_version}
+MariaDB release: ${mariadb_version}
+Architecture: ${architecture}
+
+Plugin library:
+
+  lib/mariadb/plugin/${plugin_library}
+
+Installation
+------------
+
+1. Determine the MariaDB plugin directory:
+
+     SELECT @@plugin_dir;
+
+2. Copy ${plugin_library} into that directory.
+
+3. Follow the plugin-specific activation instructions from its
+   README file.
+
+This binary was built from the MariaDB ${mariadb_version} release
+tag. Use it with the corresponding MariaDB Server release.
+Install the plugin runtime dependencies described in its README.
+EOF
+
+tar \
+  -C "${GITHUB_WORKSPACE}/dist" \
+  -czf "${GITHUB_WORKSPACE}/dist/${package_basename}.tar.gz" \
+  "${package_basename}"
+
+(
+  cd "${GITHUB_WORKSPACE}/dist"
+
+  sha256sum \
+    "${package_basename}.tar.gz" \
+    > "${package_basename}.tar.gz.sha256"
+)
+
+if [[ -n ${GITHUB_OUTPUT:-} ]]; then
+  echo "basename=${package_basename}" >> "$GITHUB_OUTPUT"
+fi
+
+echo "Created package:"
+find "${GITHUB_WORKSPACE}/dist" -maxdepth 1 -type f -print
