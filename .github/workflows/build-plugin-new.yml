@@ -1,0 +1,115 @@
+name: Build lefred MariaDB plugin
+
+on:
+  workflow_call:
+    inputs:
+      test_suites:
+        description: mtr suite names to run
+        required: false
+        default: ""
+        type: string
+
+      artifact_retention_days:
+        description: Number of days to retain workflow artifacts
+        required: false
+        default: 14
+        type: number
+
+      mariadb_versions:
+        description: Versions (tarbuldnum or X.Y[.Z]) - whitespace-separated or a JSON array
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        name: Validate MariaDB versions
+        env:
+          VERSIONS: ${{ inputs.mariadb_versions }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, re
+          raw = os.environ['VERSIONS'].strip()
+          versions = json.loads(raw) if raw.startswith('[') else raw.split()
+          if not isinstance(versions, list) or not versions or len(versions) > 256:
+              raise SystemExit('mariadb_versions must contain 1..256 versions')
+          matrix = []
+          for version in versions:
+              if not isinstance(version, (int, str)):
+                  raise SystemExit('mariadb_versions entries must be strings or integers')
+              value = str(version)
+              if not re.fullmatch(r'[0-9]+|[0-9]+\.[0-9]+(\.[0-9]+)?', value):
+                  raise SystemExit('Use autobake build IDs or MariaDB releases such as 1234, 11.4, or 11.8.2')
+              row = {'mariadb_version': value}
+              if row not in matrix:
+                  matrix.append(row)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('matrix=' + json.dumps({'include': matrix}) + '\n')
+          PYTHON
+
+  build:
+    needs: versions
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.versions.outputs.matrix) }}
+    env:
+      MARIADB_VERSION: ${{ matrix.mariadb_version }}
+    steps:
+      - name: Install the SDK
+        run: |
+          set -euo pipefail
+          if [[ "$MARIADB_VERSION" =~ ^[0-9]+$ ]]; then
+            curl --fail --location \
+              "https://ci.mariadb.org/$MARIADB_VERSION/amd64-ubuntu-2404-deb-autobake/mariadb.sources" |
+              sudo tee /etc/apt/sources.list.d/mariadb.sources >/dev/null
+          elif [[ "$MARIADB_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            cat <<EOF | sudo tee /etc/apt/sources.list.d/mariadb.sources >/dev/null
+          X-Repolib-Name: MariaDB
+          Types: deb
+          URIs: https://archive.mariadb.org/mariadb-$MARIADB_VERSION/repo/ubuntu
+          Suites: noble
+          Trusted: yes
+          EOF
+          fi
+          sudo apt-get update
+          sudo apt-get install -y -- libmariadb-dev cmake gcc g++ dpkg-dev file lsb-release
+
+      - name: Check out plugin repository at triggering commit
+        uses: actions/checkout@v5
+        with:
+          path: plugin-source
+          submodules: recursive
+
+      - name: Build only the plugin target
+        run: |
+          set -euo pipefail
+          cd plugin-source
+          cmake -DDEB=1 .
+          cmake --build . --target package --parallel
+
+      - name: Run MTR using prebuilt runtime
+        if: ${{ inputs.test_suites }}
+        env:
+          TEST_SUITES: ${{ inputs.test_suites }}
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y ./plugin-source/mariadb-plugin-*.deb
+          sudo apt-get install -y mariadb-test mariadb-test-data
+          cd /usr/share/mariadb/mariadb-test
+          ./mtr --suites "$TEST_SUITES" --force --verbose-restart --retry=1 --vardir="$HOME"/var
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: mariadb-plugin-${{ matrix.mariadb_version }}
+          path: plugin-source/mariadb-plugin-*.deb
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact_retention_days }}
