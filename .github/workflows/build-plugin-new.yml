@@ -226,3 +226,52 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: ${{ inputs.artifact_retention_days }}
+
+  release:
+    name: Publish GitHub Release
+    # deb/tgz and rpm jobs are each optional (package_formats); publish when
+    # at least one produced packages and none failed.
+    if: >-
+      ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v')
+          && (needs.build.result == 'success' || needs.rpm.result == 'success')
+          && !contains(needs.*.result, 'failure') }}
+    needs:
+      - build
+      - rpm
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all packages
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+          pattern: mariadb-plugin-*
+
+      - name: Verify release assets
+        run: |
+          set -euo pipefail
+          cd release-assets
+          ls -l
+          packages=$(find . -maxdepth 1 -type f ! -name '*.sha256' | wc -l)
+          checksums=$(find . -maxdepth 1 -type f -name '*.sha256' | wc -l)
+          (( packages > 0 )) || { echo '::error::No package was downloaded'; exit 1; }
+          (( packages == checksums )) || { echo "::error::Found $packages packages but $checksums checksum files"; exit 1; }
+          for checksum in *.sha256; do
+            sha256sum --check -- "$checksum"
+          done
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; uploading assets"
+            gh release upload "$TAG" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" release-assets/* --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --title "$TAG" --generate-notes
+          fi
