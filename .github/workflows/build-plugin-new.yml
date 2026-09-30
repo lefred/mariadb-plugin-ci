@@ -32,6 +32,18 @@ on:
         default: "9"
         type: string
 
+      extra_packages_deb:
+        description: Optional additional apt package names to install on Ubuntu before building (space-separated); prefer baking dependencies into the image
+        required: false
+        default: ""
+        type: string
+
+      extra_packages_rpm:
+        description: Optional additional dnf package names to install on AlmaLinux before building (space-separated); package names may differ from extra_packages_deb
+        required: false
+        default: ""
+        type: string
+
 permissions:
   contents: read
 
@@ -107,6 +119,16 @@ jobs:
           fi
           sudo apt-get update
           sudo apt-get install -y -- libmariadb-dev cmake gcc g++ dpkg-dev file lsb-release
+
+      - name: Install optional plugin dependencies
+        env:
+          EXTRA_PACKAGES: ${{ inputs.extra_packages_deb }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$EXTRA_PACKAGES" ]]; then
+            read -r -a packages <<< "$EXTRA_PACKAGES"
+            sudo apt-get install -y -- "${packages[@]}"
+          fi
 
       - name: Check out plugin repository at triggering commit
         uses: actions/checkout@v5
@@ -197,6 +219,16 @@ jobs:
           echo 'module_hotfixes=1' >> /etc/yum.repos.d/MariaDB.repo
           dnf install -y epel-release
           dnf install -y MariaDB-devel cmake gcc gcc-c++ make rpm-build git file
+
+      - name: Install optional plugin dependencies
+        env:
+          EXTRA_PACKAGES: ${{ inputs.extra_packages_rpm }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$EXTRA_PACKAGES" ]]; then
+            read -r -a packages <<< "$EXTRA_PACKAGES"
+            dnf install -y -- "${packages[@]}"
+          fi
 
       - name: Check out plugin repository at triggering commit
         uses: actions/checkout@v5
