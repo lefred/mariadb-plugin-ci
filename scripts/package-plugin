@@ -14,12 +14,16 @@ architecture="$(uname -m)"
 safe_plugin_name="$(
   printf '%s' "${plugin_name}" |
     tr '[:upper:]' '[:lower:]' |
-    sed -E 's/[^a-z0-9._+-]+/-/g'
+    sed -E 's/[^a-z0-9._+]+/_/g'
 )"
 
-[[ "$safe_plugin_name" =~ ^[a-z0-9_][a-z0-9_.+-]*$ ]] || { echo 'Invalid plugin name' >&2; exit 1; }
+[[ "$safe_plugin_name" =~ ^[a-z0-9_][a-z0-9_.+]*$ ]] || { echo 'Invalid plugin name' >&2; exit 1; }
 
-package_basename="${safe_plugin_name}-${package_version}-mariadb${mariadb_version}-linux-${architecture}"
+# Same naming as MariaDB Foundry packages: mariadb-plugin-NAME-SERVER-VERSION-linux-ARCH,
+# with the plugin version stripped of a tag's leading "v".
+[[ "$package_version" =~ ^v[0-9] ]] && package_version="${package_version#v}"
+
+package_basename="mariadb-plugin-${safe_plugin_name}-${mariadb_version}-${package_version}-linux-${architecture}"
 package_root="${GITHUB_WORKSPACE}/dist/${package_basename}"
 
 mkdir -p "${package_root}/lib/mariadb/plugin"
