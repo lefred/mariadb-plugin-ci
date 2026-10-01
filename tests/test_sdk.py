@@ -54,7 +54,13 @@ class SDKTests(unittest.TestCase):
             plugin.mkdir()
             (server / 'plugin').mkdir(parents=True)
             (plugin / 'CMakeLists.txt').write_text('MYSQL_ADD_PLUGIN(BANQUISE_AGENT plugin.c)\n')
-            (plugin / 'plugin.c').write_text('int plugin_function(void) { return 42; }\n')
+            # Same leading layout as MariaDB's st_maria_plugin, for the .yml metadata.
+            (plugin / 'plugin.c').write_text('''int plugin_function(void) { return 42; }
+struct st_maria_plugin { int type; void *info; const char *name, *author, *descr; int license; };
+int _maria_sizeof_struct_st_plugin_ = sizeof(struct st_maria_plugin);
+struct st_maria_plugin _maria_plugin_declarations_[] = {
+  {1, 0, "banquise_agent", "lefred", "Fixture agent: banquise", 1}, {0, 0, 0, 0, 0, 0}};
+''')
             for doc in ('README.md', 'LICENSE'):
                 (plugin / doc).write_text('fixture documentation\n')
             (server / 'CMakeLists.txt').write_text('''cmake_minimum_required(VERSION 3.10)
@@ -77,14 +83,29 @@ endif()
             subprocess.run([str(ROOT / 'scripts/build-plugin'), 'https://example.org/source.git'], env=env, check=True)
             library = dict(line.split('=', 1) for line in output.read_text().splitlines())['path']
             env.update(GITHUB_WORKSPACE=str(base), PLUGIN_NAME='banquise_agent', PLUGIN_LIBRARY='banquise_agent.so',
-                       PLUGIN_PATH=library, PACKAGE_VERSION='v1.0', MARIADB_VERSION='13.0.2')
+                       PLUGIN_PATH=library, PACKAGE_VERSION='v1.0', MARIADB_VERSION='13.0.2',
+                       GITHUB_SHA='0123abcd')
             subprocess.run([str(ROOT / 'scripts/package-plugin')], env=env, check=True)
             archive = next((base / 'dist').glob('*.tar.gz'))
+            self.assertEqual(archive.name,
+                             f'mariadb-plugin-banquise_agent-13.0.2-1.0-linux-{os.uname().machine}.tar.gz')
             with tarfile.open(archive) as tar:
                 paths = tar.getnames()
                 for suffix in ('lib/mariadb/plugin/banquise_agent.so', 'share/doc/banquise_agent/README.md',
                                'share/doc/banquise_agent/LICENSE', 'INSTALL.txt'):
                     self.assertTrue(any(path.endswith('/' + suffix) for path in paths), suffix)
+                basename = archive.name[:-len('.tar.gz')]
+                metadata = tar.extractfile(f'{basename}/{basename}.yml').read().decode()
+            self.assertEqual(metadata, f'''- name: banquise_agent
+  filename: {basename}
+  version: 1.0
+  server: 13.0.2
+  platform: linux-{os.uname().machine}
+  author: lefred
+  description: "Fixture agent: banquise"
+  license: GPLv2
+  version_source_revision: 0123abcd
+''')
             subprocess.run(['sha256sum', '--check', archive.name + '.sha256'], cwd=archive.parent, check=True)
 
             # Exercise the local URL mode, including an actual fast-forward update.
@@ -105,6 +126,59 @@ endif()
             subprocess.run([str(ROOT / 'scripts/build-plugin'), str(plugin)], env=env, check=True)
             head = subprocess.check_output(['git', '-C', str(server / 'plugin/source'), 'rev-parse', 'HEAD'], text=True).strip()
             self.assertEqual(head, git('rev-parse', 'HEAD'))
+
+    def test_foundry_build_plugin(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            foundry = base / 'foundry'
+            foundry.mkdir()
+            # Stand-in for Foundry's run.cmake: same arguments and summary lines.
+            (foundry / 'run.cmake').write_text('''math(EXPR last "${CMAKE_ARGC} - 1")
+set(dir "${CMAKE_ARGV${last}}")
+get_filename_component(name "${dir}" NAME)
+get_filename_component(root "${CMAKE_CURRENT_LIST_DIR}" REALPATH)
+get_filename_component(parent "${dir}/.." REALPATH)
+if(NOT parent STREQUAL root)
+  message(FATAL_ERROR "recipe outside Foundry")
+endif()
+if(RPM)
+  set(package "MariaDB-plugin-${name}.rpm")
+else()
+  set(package "mariadb-plugin-${name}.tar.gz")
+endif()
+file(READ "${dir}/CMakeLists.txt" recipe)
+file(WRITE "${package}" "${recipe}")
+if(DEFINED ENV{FIXTURE_FAIL})
+  message(STATUS "FOUNDRY-RESULT: FAIL ${name} build 2")
+else()
+  message(STATUS "FOUNDRY-RESULT: PASS ${name} ${package}")
+endif()
+''')
+            prefix = base / 'devel'
+            (prefix / 'share/cmake/mariadb-plugin').mkdir(parents=True)
+            (prefix / 'share/cmake/mariadb-plugin/mariadb-plugin-config.cmake').write_text('')
+            plugin = base / 'checkout'
+            plugin.mkdir()
+            (plugin / 'CMakeLists.txt').write_text('')
+            output = base / 'output'
+            env = dict(os.environ, PLUGIN_SOURCE=str(plugin), PLUGIN_NAME='viruscan', FOUNDRY_DIR=str(foundry),
+                       MARIADB_DEVEL_PREFIX=str(prefix), FOUNDRY_FORMATS='tgz rpm',
+                       CMAKE_OPTIONS='-DPLUGIN_VIRUSCAN=DYNAMIC "-DX=a b"', GITHUB_WORKSPACE=str(base),
+                       GITHUB_OUTPUT=str(output))
+            script = str(ROOT / 'scripts/foundry-build-plugin')
+            subprocess.run([script], env=env, cwd=temporary, check=True, stdout=subprocess.DEVNULL)
+            packages = output.read_text().split('=', 1)[1].split()
+            self.assertEqual(packages, ['mariadb-plugin-viruscan.tar.gz', 'MariaDB-plugin-viruscan.rpm'])
+            recipe = (base / 'dist' / packages[0]).read_text()
+            self.assertIn('SOURCE_DIR [==[{}]==]'.format(base / 'foundry-work/source/viruscan'), recipe)
+            self.assertIn('[==[-DPLUGIN_VIRUSCAN=DYNAMIC]==] [==[-DX=a b]==]', recipe)
+            for package in packages:
+                subprocess.run(['sha256sum', '--check', package + '.sha256'], cwd=base / 'dist',
+                               check=True, stdout=subprocess.DEVNULL)
+            for bad in (dict(FIXTURE_FAIL='1'), dict(FOUNDRY_FORMATS='zip'), dict(PLUGIN_NAME='../x'),
+                        dict(CMAKE_OPTIONS='-DX=]==]')):
+                result = subprocess.run([script], env=dict(env, **bad), cwd=temporary, capture_output=True)
+                self.assertNotEqual(result.returncode, 0, bad)
 
 
 if __name__ == '__main__':

@@ -60,6 +60,20 @@ do
   fi
 done
 
+plugin_source="${PLUGIN_SOURCE:-$GITHUB_WORKSPACE/plugin-source}"
+revision="$(git -c safe.directory='*' -C "${plugin_source}" rev-parse HEAD 2>/dev/null || printf '%s' "${GITHUB_SHA:-}")"
+
+# Same metadata file as Foundry's archives, at the root of the package directory.
+"$(dirname "${BASH_SOURCE[0]}")/plugin-metadata" \
+  "$PLUGIN_PATH" \
+  "${safe_plugin_name}" \
+  "${package_basename}" \
+  "${package_version}" \
+  "${mariadb_version}" \
+  "linux-${architecture}" \
+  "${revision}" \
+  > "${package_root}/${package_basename}.yml"
+
 cat > "${package_root}/INSTALL.txt" <<EOF
 MariaDB plugin: ${plugin_name}
 Package version: ${package_version}
