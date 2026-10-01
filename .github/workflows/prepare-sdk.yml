@@ -16,7 +16,7 @@ on:
         type: boolean
       extra_packages:
         description: RPM dependencies baked into the SDK (prefer pinned package versions)
-        default: clamav-devel libcurl-devel libarchive-devel openssl-devel
+        default: clamav-devel libcurl-devel libarchive-devel openssl-devel libargon2-devel
         type: string
       base_image:
         description: Build worker image (use a digest for reproducibility)
