@@ -268,9 +268,10 @@ mariadb-plugin-viruscan-13.0.2-1.0.0-linux-x86_64/
 └── mariadb-plugin-viruscan-13.0.2-1.0.0-linux-x86_64.yml
 ```
 
-The `.yml` file carries the same metadata as Foundry's archives, plus the plugin
-commit. Author, description and license are read from the library's plugin
-declaration:
+The `.yml` file carries the same metadata as Foundry's archives, including
+`version_source_revision`: the MariaDB server commit the plugin was compiled
+against (the SDK's `mariadb-X.Y.Z` checkout), not the plugin's own commit.
+Author, description and license are read from the library's plugin declaration:
 
 ```yaml
 - name: viruscan
@@ -281,7 +282,7 @@ declaration:
   author: lefred
   description: ClamAV-backed virus scanning for MariaDB
   license: GPLv2
-  version_source_revision: 170b1d70737be6f134448f51713cdc1ae215b420
+  version_source_revision: 620a4b5624222048fece7fe1789978ae0675cae2
 ```
 
 README/README.md/README.txt and LICENSE/LICENSE.md/COPYING are included when present
