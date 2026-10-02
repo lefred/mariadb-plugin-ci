@@ -75,18 +75,6 @@ on:
         description: Path inside a custom SDK to a matching prebuilt MariaDB binary distribution with MTR
         default: ''
         type: string
-      builder:
-        description: sdk (in-tree build, this repository's packages) or foundry (out-of-tree MariaDB Foundry packages)
-        default: sdk
-        type: string
-      foundry_image:
-        description: Prepared Foundry SDK repository used when builder is foundry; version is appended as its tag
-        default: quay.io/lefred14/mariadb-plugin-foundry
-        type: string
-      foundry_formats:
-        description: Foundry package formats to produce (tgz, rpm)
-        default: tgz rpm
-        type: string
 
 permissions:
   contents: read
@@ -100,12 +88,10 @@ jobs:
       - id: matrix
         name: Validate exact releases and resolve SDK images
         env:
-          BUILDER: ${{ inputs.builder }}
           VERSIONS: ${{ inputs.mariadb_versions }}
-          SDK_IMAGE: ${{ inputs.builder == 'foundry' && inputs.foundry_image || inputs.sdk_image }}
+          SDK_IMAGE: ${{ inputs.sdk_image }}
           SDK_IMAGES: ${{ inputs.sdk_images }}
         run: |
-          [[ "$BUILDER" =~ ^(sdk|foundry)$ ]] || { echo '::error::builder must be sdk or foundry'; exit 1; }
           python3 - <<'PYTHON'
           import json, os, re
           raw = os.environ['VERSIONS'].strip()
@@ -131,7 +117,6 @@ jobs:
 
   build:
     name: MariaDB ${{ matrix.mariadb_version }}
-    if: ${{ inputs.builder == 'sdk' }}
     needs: versions
     runs-on: ubuntu-24.04
     strategy:
@@ -266,88 +251,12 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ inputs.artifact_retention_days }}
 
-  foundry:
-    name: Foundry MariaDB ${{ matrix.mariadb_version }}
-    if: ${{ inputs.builder == 'foundry' }}
-    needs: versions
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.versions.outputs.matrix) }}
-    container:
-      image: ${{ matrix.image }}
-      options: --user root
-    defaults:
-      run:
-        shell: bash
-    env:
-      MARIADB_VERSION: ${{ matrix.mariadb_version }}
-    steps:
-      - name: Check out plugin repository at triggering commit
-        uses: actions/checkout@v5
-        with:
-          path: plugin-source
-          submodules: recursive
-
-      - name: Verify prepared Foundry SDK
-        env:
-          RUN_TESTS: ${{ inputs.run_tests }}
-        run: |
-          set -euo pipefail
-          test "$(cat /home/buildbot/mariadb-sdk-version)" = "$MARIADB_VERSION" || {
-            echo '::error::Foundry SDK version does not match the requested MariaDB version'; exit 1;
-          }
-          test -f /home/buildbot/mariadb-devel/share/cmake/mariadb-plugin/mariadb-plugin-config.cmake
-          test -f /home/buildbot/foundry/run.cmake
-          test -x /home/buildbot/bin/foundry-build-plugin
-          if [[ "$RUN_TESTS" == true ]]; then
-            echo '::error::builder: foundry does not run MTR (no server in the SDK). Set run_tests: false.'
-            exit 1
-          fi
-          echo "MariaDB commit $(cat /home/buildbot/mariadb-sdk-commit), Foundry commit $(cat /home/buildbot/foundry-commit)"
-
-      - name: Install optional plugin dependencies
-        env:
-          EXTRA_PACKAGES: ${{ inputs.extra_packages }}
-        run: |
-          set -euo pipefail
-          if [[ -n "$EXTRA_PACKAGES" ]]; then
-            read -r -a packages <<< "$EXTRA_PACKAGES"
-            dnf install -y -- "${packages[@]}"
-          fi
-
-      - name: Build and package with Foundry
-        id: foundry
-        env:
-          PLUGIN_NAME: ${{ inputs.plugin_directory || inputs.plugin_name }}
-          CMAKE_OPTIONS: ${{ inputs.cmake_options }}
-          FOUNDRY_FORMATS: ${{ inputs.foundry_formats }}
-        run: |
-          set -euo pipefail
-          # Shell variables hold the container paths; the expressions hold host paths.
-          PLUGIN_SOURCE="$GITHUB_WORKSPACE/plugin-source" FOUNDRY_WORK="$RUNNER_TEMP/foundry-work" \
-            /home/buildbot/bin/foundry-build-plugin
-
-      - name: Upload packages
-        uses: actions/upload-artifact@v7
-        with:
-          name: foundry-${{ inputs.plugin_name }}-mariadb${{ matrix.mariadb_version }}-linux-x86_64
-          path: dist/*
-          if-no-files-found: error
-          retention-days: ${{ inputs.artifact_retention_days }}
-
   release:
     name: Publish GitHub Release
 
-    # Exactly one of build/foundry runs; the other is skipped.
-    if: >-
-      ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v')
-          && (needs.build.result == 'success' || needs.foundry.result == 'success')
-          && !contains(needs.*.result, 'failure') }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
 
-    needs:
-      - build
-      - foundry
+    needs: build
 
     runs-on: ubuntu-24.04
 

@@ -113,74 +113,11 @@ Use a workflow commit SHA instead of `@main` for pinned production callers. Over
 Each map entry overrides the full image reference for that release. Unmapped
 versions use `sdk_image:version`. The image's recorded release must match the matrix.
 
-## Foundry builder (preview)
+## Foundry-style builds
 
-`builder: foundry` packages the plugin with [MariaDB Foundry](https://github.com/MariaDB/foundry)
-instead of building it inside a configured server tree. The plugin is built
-out-of-tree against an installed MariaDB Development component and packaged in
-Foundry's format, for example:
-
-```text
-mariadb-plugin-viruscan-11.4.13-1.0-linux-x86_64.tar.gz   (lib/plugin/viruscan.so, .yml metadata, tests)
-MariaDB-plugin-viruscan-11.4.13_1.0-1.el8.x86_64.rpm      (Requires: MariaDB-server = 11.4.13)
-```
-
-Each package gets a `.sha256` file, and tagged builds publish them to the GitHub Release.
-The version in the filename comes from the plugin's CMake `VERSION`; `package_version`
-does not apply. The SDK contains no server, so `run_tests` must be `false`.
-
-Out-of-tree builds need `mariadb-plugin-config.cmake` (MDEV-40608). At the time of
-writing it exists only on the MariaDB 11.4 branch (commit `3977a282`) and in no
-release. Prepare a Foundry SDK from a ref that contains it; the image tag is the
-server version that ref reports:
-
-```bash
-podman build -f sdk/Containerfile.foundry \
-  --build-arg MARIADB_REF=3977a282b74c780aedef2390828a7e611a751cd5 \
-  --build-arg FOUNDRY_REF=77a6e4cc861740cc40c781509eb893d86b757d41 \
-  -t localhost/mariadb-plugin-foundry:11.4.13 .
-```
-
-or dispatch `prepare-foundry-sdk.yml` with the same refs. Use full commit SHAs
-(short SHAs cannot be fetched) or tags such as `mariadb-13.0.3` once releases
-include MDEV-40608. Only the Development component is compiled and installed into
-`/home/buildbot/mariadb-devel` (about 30 seconds); the source tree is removed. A
-branch build reports an unreleased version, so a later rebuild from the release
-tag must not reuse its image tag without care.
-
-See [examples/viruscan-foundry.yml](examples/viruscan-foundry.yml) for a caller. The
-plugin's top-level `CMakeLists.txt` must support standalone builds. The pattern
-below keeps in-tree builds working on older servers:
-
-```cmake
-IF(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  CMAKE_MINIMUM_REQUIRED(VERSION 3.12)
-  FIND_PACKAGE(mariadb-plugin REQUIRED)
-ENDIF()
-
-# Older MYSQL_ADD_PLUGIN misparses AUTHOR/DESCRIPTION; only the new macro accepts them.
-IF(COMMAND MARIADB_ADD_PLUGIN)
-  SET(METADATA AUTHOR "you" DESCRIPTION "What it does" VERSION 1.0)
-  IF(EXTERNAL_PLUGIN)
-    LIST(APPEND METADATA DEPENDS mariadb_private)  # empty DEPENDS fails out-of-tree
-  ENDIF()
-ENDIF()
-
-MYSQL_ADD_PLUGIN(myplugin myplugin.cc MODULE_ONLY ${METADATA})
-
-IF(EXTERNAL_PLUGIN)
-  INCLUDE(CPack)  # Foundry builds the "package" target
-ENDIF()
-```
-
-The `DEPENDS` and `CPack` lines work around gaps in the current upstream support. Foundry's own
-`tidesql` recipe fails on the same `ADD_DEPENDENCIES` error. For a local check, run
-the helper in the image with the plugin checkout mounted:
-
-```bash
-podman run --rm --user root -v "$PWD:/src:ro,z" localhost/mariadb-plugin-foundry:11.4.13 \
-  bash -c 'cd /tmp && PLUGIN_SOURCE=/src PLUGIN_NAME=vmstat FOUNDRY_FORMATS="tgz rpm" foundry-build-plugin'
-```
+For out-of-tree builds packaged by the plugin's own CMake/CPack (deb, rpm, tgz),
+call `build-plugin-new.yml` instead. It installs `libmariadb-dev` from MariaDB
+repositories and needs no prepared SDK image.
 
 ## Crypto EXTRA dependencies
 
@@ -316,7 +253,7 @@ avoid downloads and repository drift on every release.
 
 ```bash
 python3 -m unittest discover -s tests -v
-bash -n sdk/prepare sdk/prepare-foundry scripts/package-plugin
+bash -n sdk/prepare scripts/package-plugin
 actionlint
 ```
 
