@@ -44,6 +44,12 @@ on:
         default: ""
         type: string
 
+      allow_partial_release:
+        description: Publish a release with the packages that succeeded even if some builds failed
+        required: false
+        default: false
+        type: boolean
+
 permissions:
   contents: read
 
@@ -262,11 +268,13 @@ jobs:
   release:
     name: Publish GitHub Release
     # deb/tgz and rpm jobs are each optional (package_formats); publish when
-    # at least one produced packages and none failed.
+    # at least one produced packages and none failed, or, with
+    # allow_partial_release, with whatever packages were produced.
     if: >-
       ${{ !cancelled() && startsWith(github.ref, 'refs/tags/v')
-          && (needs.build.result == 'success' || needs.rpm.result == 'success')
-          && !contains(needs.*.result, 'failure') }}
+          && (inputs.allow_partial_release
+              || ((needs.build.result == 'success' || needs.rpm.result == 'success')
+                  && !contains(needs.*.result, 'failure'))) }}
     needs:
       - build
       - rpm
