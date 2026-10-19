@@ -75,6 +75,15 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/plugin/source/CMakeLists.txt")
   add_subdirectory(plugin/source)
 endif()
 ''')
+            # Packaging records the server revision, independently of GITHUB_SHA.
+            subprocess.run(['git', 'init', '-b', 'main', str(server)], check=True,
+                           capture_output=True)
+            subprocess.run(['git', '-C', str(server), 'add', 'CMakeLists.txt'], check=True)
+            subprocess.run(['git', '-C', str(server), '-c', 'user.name=Fixture',
+                            '-c', 'user.email=fixture@example.invalid',
+                            'commit', '-m', 'server fixture'], check=True, capture_output=True)
+            server_revision = subprocess.check_output(
+                ['git', '-C', str(server), 'rev-parse', 'HEAD'], text=True).strip()
             output = base / 'output'
             env = dict(os.environ, MARIADB_SOURCE=str(server), PLUGIN_SOURCE=str(plugin),
                        GITHUB_OUTPUT=str(output), CCACHE_DIR=str(base / 'ccache'))
@@ -104,7 +113,7 @@ endif()
   author: lefred
   description: "Fixture agent: banquise"
   license: GPLv2
-  version_source_revision: 0123abcd
+  version_source_revision: {server_revision}
 ''')
             subprocess.run(['sha256sum', '--check', archive.name + '.sha256'], cwd=archive.parent, check=True)
 
