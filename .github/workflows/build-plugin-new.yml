@@ -50,6 +50,12 @@ on:
         default: false
         type: boolean
 
+      parallel:
+        description: Parallel threads for builds
+        required: false
+        default: ""
+        type: string
+
 permissions:
   contents: read
 
@@ -157,7 +163,7 @@ jobs:
             esac
             echo "::group::Build $format package"
             cmake -S plugin-source -B "build-$format" "${options[@]}"
-            cmake --build "build-$format" --target package --parallel 2
+            cmake --build "build-$format" --target package --parallel ${{ inputs.parallel }} 
             echo "::endgroup::"
             mapfile -t packages < <(find "build-$format" -maxdepth 1 -type f -name "$pattern")
             (( ${#packages[@]} )) || { echo "::error::No $format package produced"; exit 1; }
@@ -246,7 +252,7 @@ jobs:
         run: |
           set -euo pipefail
           cmake -S plugin-source -B build-rpm -DRPM=1
-          cmake --build build-rpm --target package --parallel 2
+          cmake --build build-rpm --target package --parallel ${{ inputs.parallel }} 
           mkdir -p dist
           mapfile -t packages < <(find build-rpm -maxdepth 1 -type f -name '*.rpm')
           (( ${#packages[@]} )) || { echo '::error::No rpm package produced'; exit 1; }
