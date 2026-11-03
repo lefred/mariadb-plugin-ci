@@ -245,6 +245,10 @@ the newly built library. The runtime must include everything that suite needs
 select it through `sdk_images`; automatic runtime downloading is not implemented.
 Existing suites depending on the old build-tree layout may need adaptation.
 
+`package_formats` mirrors the `build-plugin-new.yml` input. The SDK builder only
+produces `tgz` archives, so it defaults to `tgz` and rejects `deb`/`rpm`; use
+`build-plugin-new.yml` for those formats.
+
 `extra_packages` is an optional whitespace-separated list of RPM specifications
 installed before plugin configuration. Prefer baking them into a pinned SDK to
 avoid downloads and repository drift on every release.

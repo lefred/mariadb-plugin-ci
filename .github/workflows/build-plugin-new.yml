@@ -158,7 +158,10 @@ jobs:
           for format in "${formats[@]}"; do
             case "$format" in
               deb) options=(-DDEB=1); pattern='*.deb' ;;
-              tgz) options=(); pattern='*.tar.gz' ;;
+              # Setting INSTALL_SYSCONFDIR skips the SDK's STANDALONE fallback,
+              # which also sets INSTALL_SYSCONF2DIR to etc/my.cnf.d: a tarball
+              # then has no my.cnf.d file loading the plugin at startup.
+              tgz) options=(-DINSTALL_SYSCONFDIR=etc); pattern='*.tar.gz' ;;
               *) echo "::error::Unknown package format: $format"; exit 1 ;;
             esac
             echo "::group::Build $format package"

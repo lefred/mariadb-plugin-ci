@@ -49,6 +49,12 @@ on:
         default: ""
         type: string
 
+      package_formats:
+        description: Package formats to produce - whitespace-separated; the SDK builder only supports tgz
+        required: false
+        default: tgz
+        type: string
+
       artifact_retention_days:
         description: Number of days to retain workflow artifacts
         required: false
@@ -91,6 +97,7 @@ jobs:
           VERSIONS: ${{ inputs.mariadb_versions }}
           SDK_IMAGE: ${{ inputs.sdk_image }}
           SDK_IMAGES: ${{ inputs.sdk_images }}
+          PACKAGE_FORMATS: ${{ inputs.package_formats }}
         run: |
           python3 - <<'PYTHON'
           import json, os, re
@@ -101,6 +108,14 @@ jobs:
           images = json.loads(os.environ['SDK_IMAGES'])
           if not isinstance(images, dict):
               raise SystemExit('sdk_images must be a JSON object')
+          formats = os.environ['PACKAGE_FORMATS'].split()
+          if not formats:
+              raise SystemExit('package_formats must list at least one format')
+          unsupported = sorted(set(formats) - {'tgz'})
+          if unsupported:
+              raise SystemExit('package_formats: ' + ', '.join(unsupported)
+                               + ' not supported by the SDK builder; only tgz is'
+                               + ' (use build-plugin-new.yml for deb/rpm)')
           matrix = []
           for version in versions:
               if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
