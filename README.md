@@ -143,12 +143,7 @@ jobs:
 ```
 
 `mariadb_versions` accepts ci.mariadb.org build IDs (pre-release packages) or
-published releases (`11.4`, `11.8.2`). To find the latest build ID of every series:
-
-```bash
-scripts/find-ci-builds          # bb-X.Y-release branches
-scripts/find-ci-builds --dev    # X.Y development branches
-```
+published releases (`11.4`, `11.8.2`). 
 
 Other inputs: `test_suites` (mtr suites to run), `extra_packages_deb`,
 `extra_packages_rpm`, `parallel`, and `artifact_retention_days`.
