@@ -1,4 +1,4 @@
-name: Build lefred MariaDB plugin
+name: Build MariaDB plugin (Foundry-style)
 
 on:
   workflow_call:

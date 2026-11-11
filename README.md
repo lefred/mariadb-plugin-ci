@@ -1,8 +1,15 @@
 # mariadb-plugin-ci
 
-Reusable plugin releases from prepared MariaDB source/CMake SDK images. Release
-jobs never clone MariaDB or configure it from scratch, and never request a server
-or global build. Only the selected plugin target and its CMake dependencies build.
+Reusable GitHub Actions workflows that build and release MariaDB plugins kept in
+their own repositories. Pick the workflow that matches how the plugin builds:
+
+| Workflow | Plugin builds… | Versions | Packages |
+|---|---|---|---|
+| [`build-plugin-new.yml`](#foundry-style-builds) | out of tree with its own CMake/CPack against `libmariadb-dev` / `MariaDB-devel` | ci.mariadb.org build IDs or releases | deb, rpm, tgz |
+| `build-plugin.yml` (below) | in tree, inside a prepared MariaDB source/CMake SDK image | exact releases with an SDK image | tgz |
+
+The SDK workflow never clones MariaDB or configures it from scratch, and never requests
+a server or global build. Only the selected plugin target and its CMake dependencies build.
 
 ## Architecture
 
@@ -19,7 +26,7 @@ or global build. Only the selected plugin target and its CMake dependencies buil
    verified, and published to a GitHub Release for `v*` tags.
 
 There is no implicit fallback when an image is missing: prepare/publish it first.
-The default registry repository is `quay.io/lefred/mariadb-plugin-build`; this is a
+The default registry repository is `quay.io/lefred14/mariadb-plugin-build`; this is a
 configurable publication destination, not a claim that images already exist.
 
 ## Prepare images
@@ -116,28 +123,49 @@ versions use `sdk_image:version`. The image's recorded release must match the ma
 ## Foundry-style builds
 
 For out-of-tree builds packaged by the plugin's own CMake/CPack (deb, rpm, tgz),
-call `build-plugin-new.yml` instead. It installs `libmariadb-dev` from MariaDB
-repositories and needs no prepared SDK image.
-
-## Crypto EXTRA dependencies
-
-Crypto EXTRA requires Argon2 development files and system OpenSSL. For SDK images
-published before Argon2 was added to the defaults, use these caller inputs:
+call `build-plugin-new.yml` instead. It installs `libmariadb-dev` (Ubuntu 24.04)
+or `MariaDB-devel` (AlmaLinux) from MariaDB repositories, runs
+`cmake --build … --target package`, and needs no prepared SDK image. See
+[examples/foundry.yml](examples/foundry.yml):
 
 ```yaml
-      plugin_name: crypto_extra
-      plugin_directory: crypto_extra
-      build_target: crypto_extra
-      plugin_library: crypto_extra.so
-      cmake_options: -DPLUGIN_CRYPTO_EXTRA=DYNAMIC -DWITH_SSL=system
-      extra_packages: libargon2-devel
-      run_tests: false
+jobs:
+  build:
+    uses: lefred/mariadb-plugin-ci/.github/workflows/build-plugin-new.yml@main
+    with:
+      mariadb_versions: |
+        77519
+        77521
+        13.0.2
+      package_formats: tgz rpm
+      almalinux_version: "10"
+      allow_partial_release: true
 ```
 
-Keep your existing `sdk_image` and `mariadb_versions` inputs. The package installs
-before plugin configuration. Once both SDK images have been rebuilt and published
-with the new default dependencies, `extra_packages` can be removed. Changing the
-repository's defaults does not modify already-published images.
+`mariadb_versions` accepts ci.mariadb.org build IDs (pre-release packages) or
+published releases (`11.4`, `11.8.2`). To find the latest build ID of every series:
+
+```bash
+scripts/find-ci-builds          # bb-X.Y-release branches
+scripts/find-ci-builds --dev    # X.Y development branches
+```
+
+Other inputs: `test_suites` (mtr suites to run), `extra_packages_deb`,
+`extra_packages_rpm`, `parallel`, and `artifact_retention_days`.
+
+## Extra build dependencies
+
+If a plugin needs libraries that the SDK image does not include, list them in
+`extra_packages`; they are installed before plugin configuration:
+
+```yaml
+      cmake_options: -DPLUGIN_MY_PLUGIN=DYNAMIC -DWITH_SSL=system
+      extra_packages: libargon2-devel
+```
+
+This downloads packages on every run. For releases, bake them into the image
+(`EXTRA_PACKAGES` when preparing it) instead. Changing the repository's defaults
+does not modify images that are already published.
 
 ## Local plugin build and package (MariaDB 13.0.2)
 
@@ -176,7 +204,7 @@ Direct helper examples inside an SDK:
 
 ```bash
 CMAKE_OPTIONS="-DWITH_SSL=system" build-plugin https://github.com/lefred/mariadb-plugin-viruscan.git
-build-plugin https://github.com/lefred/mariadb-plugin-banquise-agent banquise_agent
+build-plugin https://github.com/example/mariadb-plugin-my-plugin my_plugin
 ```
 
 Existing clones update with `git pull --ff-only`, followed by submodule updates.
@@ -227,17 +255,14 @@ in the plugin repository. A missing license is not invented. Runtime libraries
 such as ClamAV are not bundled: install matching dependencies on the destination.
 Artifacts target Linux x86_64 and the AlmaLinux 8 worker ABI.
 
-Existing `plugin_name`, `plugin_directory`, `build_target`, `plugin_library`,
-`cmake_options`, `test_suite`, `run_tests`, `package_version`, and
-`artifact_retention_days` remain available. Directory and target are now optional;
-library remains explicit. Two migration changes are necessary:
+Inputs: `plugin_name` and `plugin_library` are required; `plugin_directory` and
+`build_target` are optional. Also available: `cmake_options`, `test_suite`,
+`run_tests`, `package_version`, and `artifact_retention_days`.
 
-- Supply `mariadb_versions` with exact releases and prepare their images. The old
-  implicit `main`/13.1 build is removed.
-- `run_tests` retains its old true default, but requires `test_runtime`, an absolute
-  path in a custom SDK to a matching prebuilt MariaDB binary distribution containing
-  `mysql-test/mariadb-test-run.pl` and its runtime tools. Alternatively explicitly
-  set `run_tests: false`. No server test infrastructure is compiled by this workflow.
+`run_tests` defaults to true and then requires `test_runtime`: an absolute path, in
+a custom SDK, to a matching prebuilt MariaDB binary distribution containing
+`mysql-test/mariadb-test-run.pl` and its runtime tools. Otherwise set
+`run_tests: false`. This workflow compiles no server test infrastructure.
 
 MTR links the plugin suite from `mysql-test/<test_suite>` into the runtime and uses
 the newly built library. The runtime must include everything that suite needs
@@ -268,11 +293,3 @@ also need validating against each selected upstream release. CMake may build
 small generated-header/tool dependencies of a plugin; the helper does not request
 `all`, `minbuild`, `mysqld`, or `mariadbd`. Plugins must define a standalone module
 target rather than make their target depend on a complete server build.
-
-Validated locally with MariaDB 13.0.2: SDK preparation with Galera enabled,
-VMSTAT automatic target detection in the existing configured worker image, and a
-cold Viruscan build/package/checksum using the new SDK with `WITH_SSL=system`.
-The cold build checked that neither `build/sql/mariadbd` nor `build/sql/mysqld`
-existed before or after. The Viruscan checkout tested was `4ac64a1eebe0`; it has a
-README but no LICENSE file. Other releases, hosted Actions execution, registry
-publication, and prebuilt-runtime MTR tests still need validation.

@@ -18,8 +18,8 @@ loader.exec_module(helper)
 
 class SDKTests(unittest.TestCase):
     def test_detection(self):
-        for help_text in ('... banquise_agent\n... all\n', 'banquise_agent: phony\nall: phony\n'):
-            self.assertEqual(helper.detect('MYSQL_ADD_PLUGIN(\n BANQUISE_AGENT x.cc)', help_text), 'banquise_agent')
+        for help_text in ('... sample_plugin\n... all\n', 'sample_plugin: phony\nall: phony\n'):
+            self.assertEqual(helper.detect('MYSQL_ADD_PLUGIN(\n SAMPLE_PLUGIN x.cc)', help_text), 'sample_plugin')
         self.assertEqual(helper.detect('MYSQL_ADD_PLUGIN(vmstat x.cc)', '... vmstat'), 'vmstat')
         self.assertEqual(helper.detect('set(foo bar)', '... custom', 'custom'), 'custom')
         for code, target in [('MYSQL_ADD_PLUGIN(nope x.cc)', ''),
@@ -34,7 +34,7 @@ class SDKTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / 'output'
             env = dict(os.environ, VERSIONS='11.8.5\n13.0.2\n13.0.2',
-                       SDK_IMAGE='quay.io/example/sdk', SDK_IMAGES='{"13.0.2":"quay.io/example/sdk@sha256:abc"}',
+                       SDK_IMAGE='quay.io/example/sdk', PACKAGE_FORMATS='tgz', SDK_IMAGES='{"13.0.2":"quay.io/example/sdk@sha256:abc"}',
                        GITHUB_OUTPUT=str(output))
             subprocess.run(['python3', '-c', script], env=env, check=True)
             matrix = json.loads(output.read_text().split('=', 1)[1])['include']
@@ -53,13 +53,13 @@ class SDKTests(unittest.TestCase):
             plugin = base / 'source'
             plugin.mkdir()
             (server / 'plugin').mkdir(parents=True)
-            (plugin / 'CMakeLists.txt').write_text('MYSQL_ADD_PLUGIN(BANQUISE_AGENT plugin.c)\n')
+            (plugin / 'CMakeLists.txt').write_text('MYSQL_ADD_PLUGIN(SAMPLE_PLUGIN plugin.c)\n')
             # Same leading layout as MariaDB's st_maria_plugin, for the .yml metadata.
             (plugin / 'plugin.c').write_text('''int plugin_function(void) { return 42; }
 struct st_maria_plugin { int type; void *info; const char *name, *author, *descr; int license; };
 int _maria_sizeof_struct_st_plugin_ = sizeof(struct st_maria_plugin);
 struct st_maria_plugin _maria_plugin_declarations_[] = {
-  {1, 0, "banquise_agent", "lefred", "Fixture agent: banquise", 1}, {0, 0, 0, 0, 0, 0}};
+  {1, 0, "sample_plugin", "fixture", "Fixture plugin: sample", 1}, {0, 0, 0, 0, 0, 0}};
 ''')
             for doc in ('README.md', 'LICENSE'):
                 (plugin / doc).write_text('fixture documentation\n')
@@ -91,27 +91,27 @@ endif()
                            env=env, check=True, stdout=subprocess.DEVNULL)
             subprocess.run([str(ROOT / 'scripts/build-plugin'), 'https://example.org/source.git'], env=env, check=True)
             library = dict(line.split('=', 1) for line in output.read_text().splitlines())['path']
-            env.update(GITHUB_WORKSPACE=str(base), PLUGIN_NAME='banquise_agent', PLUGIN_LIBRARY='banquise_agent.so',
+            env.update(GITHUB_WORKSPACE=str(base), PLUGIN_NAME='sample_plugin', PLUGIN_LIBRARY='sample_plugin.so',
                        PLUGIN_PATH=library, PACKAGE_VERSION='v1.0', MARIADB_VERSION='13.0.2',
                        GITHUB_SHA='0123abcd')
             subprocess.run([str(ROOT / 'scripts/package-plugin')], env=env, check=True)
             archive = next((base / 'dist').glob('*.tar.gz'))
             self.assertEqual(archive.name,
-                             f'mariadb-plugin-banquise_agent-13.0.2-1.0-linux-{os.uname().machine}.tar.gz')
+                             f'mariadb-plugin-sample_plugin-13.0.2-1.0-linux-{os.uname().machine}.tar.gz')
             with tarfile.open(archive) as tar:
                 paths = tar.getnames()
-                for suffix in ('lib/mariadb/plugin/banquise_agent.so', 'share/doc/banquise_agent/README.md',
-                               'share/doc/banquise_agent/LICENSE', 'INSTALL.txt'):
+                for suffix in ('lib/mariadb/plugin/sample_plugin.so', 'share/doc/sample_plugin/README.md',
+                               'share/doc/sample_plugin/LICENSE', 'INSTALL.txt'):
                     self.assertTrue(any(path.endswith('/' + suffix) for path in paths), suffix)
                 basename = archive.name[:-len('.tar.gz')]
                 metadata = tar.extractfile(f'{basename}/{basename}.yml').read().decode()
-            self.assertEqual(metadata, f'''- name: banquise_agent
+            self.assertEqual(metadata, f'''- name: sample_plugin
   filename: {basename}
   version: 1.0
   server: 13.0.2
   platform: linux-{os.uname().machine}
-  author: lefred
-  description: "Fixture agent: banquise"
+  author: fixture
+  description: "Fixture plugin: sample"
   license: GPLv2
   version_source_revision: {server_revision}
 ''')

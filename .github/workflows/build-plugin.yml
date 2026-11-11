@@ -1,4 +1,4 @@
-name: Build lefred MariaDB plugin
+name: Build MariaDB plugin (SDK)
 
 on:
   workflow_call:
@@ -67,7 +67,7 @@ on:
         type: string
       sdk_image:
         description: Prepared image repository; version is appended as its tag
-        default: quay.io/lefred/mariadb-plugin-build
+        default: quay.io/lefred14/mariadb-plugin-build
         type: string
       sdk_images:
         description: Optional JSON object mapping exact releases to full image references (prefer digests)
