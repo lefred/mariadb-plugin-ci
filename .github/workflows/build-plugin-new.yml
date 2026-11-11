@@ -130,7 +130,7 @@ jobs:
           EOF
           fi
           sudo apt-get update
-          sudo apt-get install -y -- libmariadb-dev cmake gcc g++ dpkg-dev file lsb-release
+          sudo apt-get -o Acquire::Retries=5 install -y -- libmariadb-dev gcc g++ dpkg-dev file lsb-release
 
       - name: Install optional plugin dependencies
         env:
