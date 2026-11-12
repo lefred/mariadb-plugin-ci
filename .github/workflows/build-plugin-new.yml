@@ -144,8 +144,8 @@ jobs:
             local m ok=() i=0
             for m in "${candidates[@]}"; do
               grep -qxF "$m" "$excluded" 2>/dev/null && continue
-              if curl -fsS --connect-timeout 5 --max-time 20 -o /dev/null "${m}dists/${codename}/InRelease" &&
-                 curl -fsS --connect-timeout 5 --max-time 20 -o /dev/null "${m}dists/${codename}-security/InRelease"; then
+              if curl -fsSL --connect-timeout 5 --max-time 20 -o /dev/null "${m}dists/${codename}/InRelease" &&
+                 curl -fsSL --connect-timeout 5 --max-time 20 -o /dev/null "${m}dists/${codename}-security/InRelease"; then
                 ok+=("$m")
               else
                 echo "ci-apt: $m does not answer, skipped" >&2
