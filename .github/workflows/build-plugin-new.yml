@@ -113,6 +113,104 @@ jobs:
     env:
       MARIADB_VERSION: ${{ matrix.mariadb_version }}
     steps:
+      # The runner's Ubuntu mirror (azure.archive.ubuntu.com) can stop
+      # resolving for hours, failing every apt-get.  ci-apt keeps apt on the
+      # Ubuntu mirrors that answer and, when apt fails to fetch from one,
+      # drops it and retries on the next.  Other apt failures are not retried.
+      - name: Install ci-apt
+        run: |
+          set -euo pipefail
+          sudo rm -f /var/tmp/ci-apt.excluded /var/tmp/ci-apt.ready
+          sudo tee /usr/local/bin/ci-apt >/dev/null <<'CIAPT'
+          #!/usr/bin/env bash
+          # ci-apt <apt-get arguments>, e.g. ci-apt update, ci-apt install -y -- pkg
+          set -uo pipefail
+          candidates=(
+            http://azure.archive.ubuntu.com/ubuntu/
+            http://archive.ubuntu.com/ubuntu/
+            http://us.archive.ubuntu.com/ubuntu/
+            http://mirrors.edge.kernel.org/ubuntu/
+            http://mirrors.mit.edu/ubuntu/
+          )
+          list=/etc/apt/apt-mirrors.txt
+          excluded=/var/tmp/ci-apt.excluded
+          ready=/var/tmp/ci-apt.ready
+          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+
+          # Write the candidates that serve this release as apt's mirror list,
+          # with priorities so apt tries them in this order; 1 when none does
+          # (the list is then left as it is)
+          pick() {
+            local m ok=() i=0
+            for m in "${candidates[@]}"; do
+              grep -qxF "$m" "$excluded" 2>/dev/null && continue
+              if curl -fsSL --connect-timeout 5 --max-time 20 -o /dev/null "${m}dists/${codename}/InRelease" &&
+                 curl -fsSL --connect-timeout 5 --max-time 20 -o /dev/null "${m}dists/${codename}-security/InRelease"; then
+                ok+=("$m")
+              else
+                echo "ci-apt: $m does not answer, skipped" >&2
+              fi
+            done
+            (( ${#ok[@]} )) || { echo "ci-apt: no Ubuntu mirror answers" >&2; return 1; }
+            for m in "${ok[@]}"; do printf '%s\tpriority:%d\n' "$m" $((++i)); done |
+              sudo tee "$list" >/dev/null
+            echo "ci-apt: Ubuntu mirrors: ${ok[*]}" >&2
+          }
+
+          # The candidate apt failed to fetch from, per the fetch errors in
+          # its output $1 ("Temporary failure resolving 'host'", "Failed to
+          # fetch http://host/...", "Could not connect to host:80"); the first
+          # listed mirror when they name only the mirror list; nothing when no
+          # Ubuntu fetch failed (other errors and warnings are not ours)
+          failed_mirror() {
+            local m host errors
+            errors=$(grep -E 'Failed to fetch|Temporary failure resolving|Could not (resolve|connect)|Unable to connect|Connection (failed|timed out)|Hash Sum mismatch|404 +Not Found' "$1")
+            [[ -n $errors ]] || return 0
+            for m in "${candidates[@]}"; do
+              host=${m#http://}; host=${host%%/*}
+              grep -qE "(//|'| )${host//./\\.}([/':]| |$)" <<<"$errors" && { echo "$m"; return; }
+            done
+            if grep -qF "mirror+file:$list" <<<"$errors"; then
+              head -n1 "$list" | cut -f1
+            fi
+          }
+
+          # First call: pick the mirrors (again on later calls while none answered)
+          if [[ ! -f $ready ]]; then
+            if pick; then
+              sudo touch "$ready"
+              # Route plain Ubuntu sources through the list (the runner image
+              # already does)
+              for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+                [[ -f $f ]] || continue
+                sudo sed -i -E "s#https?://([a-z0-9.-]+\.)?(archive|security)\.ubuntu\.com/ubuntu/?#mirror+file:$list#g" "$f"
+              done
+              [[ ${1:-} == update ]] || sudo apt-get update
+            fi
+          fi
+
+          out=$(mktemp)
+          trap 'rm -f "$out"' EXIT
+          for attempt in 1 2 3; do
+            sudo apt-get -o Acquire::Retries=3 "$@" 2>&1 | tee "$out"
+            status=${PIPESTATUS[0]}
+            bad=$(failed_mirror "$out")
+            # apt-get update exits 0 when a source failed; count that too
+            [[ $status -ne 0 || ${1:-} == update && -n $bad ]] || exit 0
+            [[ -n $bad ]] || exit "$status"
+            (( attempt < 3 )) || break
+            # Still failing on a mirror already dropped: picking again won't help
+            grep -qxF "$bad" "$excluded" 2>/dev/null && break
+            echo "ci-apt: apt failed on $bad (attempt $attempt), dropping it" >&2
+            echo "$bad" | sudo tee -a "$excluded" >/dev/null
+            pick || break
+            [[ ${1:-} == update ]] || sudo apt-get update
+          done
+          (( status )) || status=100
+          exit "$status"
+          CIAPT
+          sudo chmod 755 /usr/local/bin/ci-apt
+
       - name: Install the SDK
         run: |
           set -euo pipefail
@@ -129,8 +227,8 @@ jobs:
           Trusted: yes
           EOF
           fi
-          sudo apt-get update
-          sudo apt-get -o Acquire::Retries=5 install -y -- libmariadb-dev gcc g++ dpkg-dev file lsb-release
+          ci-apt update
+          ci-apt install -y -- libmariadb-dev gcc g++ dpkg-dev file lsb-release
 
       - name: Install optional plugin dependencies
         env:
@@ -139,7 +237,7 @@ jobs:
           set -euo pipefail
           if [[ -n "$EXTRA_PACKAGES" ]]; then
             read -r -a packages <<< "$EXTRA_PACKAGES"
-            sudo apt-get install -y -- "${packages[@]}"
+            ci-apt install -y -- "${packages[@]}"
           fi
 
       - name: Check out plugin repository at triggering commit
@@ -185,8 +283,8 @@ jobs:
         run: |
           set -euo pipefail
           compgen -G 'dist/*.deb' >/dev/null || { echo '::error::MTR needs the deb package format'; exit 1; }
-          sudo apt-get install -y ./dist/*.deb
-          sudo apt-get install -y mariadb-test mariadb-test-data
+          ci-apt install -y ./dist/*.deb
+          ci-apt install -y mariadb-test mariadb-test-data
           cd /usr/share/mariadb/mariadb-test
           ./mtr --suites "$TEST_SUITES" --force --verbose-restart --retry=1 --vardir="$HOME"/var
 
