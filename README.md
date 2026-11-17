@@ -143,7 +143,10 @@ jobs:
 ```
 
 `mariadb_versions` accepts ci.mariadb.org build IDs (pre-release packages) or
-published releases (`11.4`, `11.8.2`). 
+published releases (`11.4`, `11.8.2`). Releases are installed from
+mirror.mariadb.org: a series (`11.4`) uses its latest release, and an exact
+release uses the mirror when it is the series' latest, otherwise
+archive.mariadb.org.
 
 Other inputs: `test_suites` (mtr suites to run), `extra_packages_deb`,
 `extra_packages_rpm`, `parallel`, and `artifact_retention_days`.

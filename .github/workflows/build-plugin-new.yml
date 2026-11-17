@@ -120,12 +120,23 @@ jobs:
             curl --fail --location \
               "https://ci.mariadb.org/$MARIADB_VERSION/amd64-ubuntu-2404-deb-autobake/mariadb.sources" |
               sudo tee /etc/apt/sources.list.d/mariadb.sources >/dev/null
-          elif [[ "$MARIADB_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+          else
+            # Releases come from mirror.mariadb.org. It only keeps the latest
+            # release of each series, so older x.y.z fall back to the archive.
+            if [[ "$MARIADB_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
+              base="https://mirror.mariadb.org/repo/$MARIADB_VERSION/ubuntu"
+            else
+              base="https://mirror.mariadb.org/mariadb-$MARIADB_VERSION/repo/ubuntu"
+              curl --fail --silent --location --retry 3 --output /dev/null "$base/dists/noble/Release" ||
+                base="https://archive.mariadb.org/mariadb-$MARIADB_VERSION/repo/ubuntu"
+            fi
+            echo "MariaDB repository: $base"
             cat <<EOF | sudo tee /etc/apt/sources.list.d/mariadb.sources >/dev/null
           X-Repolib-Name: MariaDB
           Types: deb
-          URIs: https://archive.mariadb.org/mariadb-$MARIADB_VERSION/repo/ubuntu
+          URIs: $base
           Suites: noble
+          Components: main
           Trusted: yes
           EOF
           fi
@@ -223,10 +234,19 @@ jobs:
               "https://ci.mariadb.org/$MARIADB_VERSION/amd64-rhel-$EL_VERSION-rpm-autobake/MariaDB.repo" \
               > /etc/yum.repos.d/MariaDB.repo
           else
+            # Same mirror/archive selection as the deb/tgz job.
+            if [[ "$MARIADB_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
+              base="https://mirror.mariadb.org/yum/$MARIADB_VERSION/rhel/$EL_VERSION/x86_64"
+            else
+              base="https://mirror.mariadb.org/mariadb-$MARIADB_VERSION/yum/rhel/$EL_VERSION/x86_64"
+              curl --fail --silent --location --retry 3 --output /dev/null "$base/repodata/repomd.xml" ||
+                base="https://archive.mariadb.org/mariadb-$MARIADB_VERSION/yum/rhel/$EL_VERSION/x86_64"
+            fi
+            echo "MariaDB repository: $base"
             cat > /etc/yum.repos.d/MariaDB.repo <<EOF
           [MariaDB]
           name=MariaDB $MARIADB_VERSION
-          baseurl=https://archive.mariadb.org/mariadb-$MARIADB_VERSION/yum/rhel/$EL_VERSION/x86_64
+          baseurl=$base
           gpgcheck=0
           EOF
           fi
